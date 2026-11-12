@@ -88,7 +88,7 @@ function loadModel() {
     (gltf) => {
       scene.add(gltf.scene);
       frameObject(gltf.scene);
-      setStatus("Drag to orbit. Scroll to zoom.");
+      setStatus("Blue is the Saigon River. Drag to orbit.");
     },
     (event) => {
       if (!event.total) return;
