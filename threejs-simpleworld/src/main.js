@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { localToLonLat, metersPerDegree, stitchSatellite } from "./imagery.js";
 
 const MODEL_URL = "/models/district1.glb";
 const META_URL = "/models/district1.json";
@@ -36,20 +37,19 @@ function resize() {
   renderer.setSize(width, height, false);
 }
 
-function frameObject(object) {
+function frameObject(object, meta) {
   const box = new THREE.Box3().setFromObject(object);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const span = Math.max(size.x, size.y, size.z, 1);
 
   const groundSize = Math.max(size.x, size.z) * 1.35;
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(groundSize, groundSize),
-    new THREE.MeshStandardMaterial({ color: "#e6dfd3", roughness: 1, metalness: 0 }),
-  );
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.set(center.x, box.min.y - 0.2, center.z);
+  const groundY = box.min.y - 0.2;
+  const ground = satelliteGround(center.x, center.z, groundSize, groundY);
   scene.add(ground);
+  if (meta?.bbox) {
+    applySatellite(ground, center, groundSize, meta.bbox);
+  }
 
   const distance = span * 0.72;
   camera.position.set(center.x + distance * 0.15, box.max.y + distance * 0.38, center.z + distance);
@@ -60,7 +60,68 @@ function frameObject(object) {
   controls.maxDistance = span * 4;
   controls.update();
 
-  scene.fog = new THREE.Fog("#e8e2d5", distance * 1.2, distance * 4.5);
+  scene.fog = new THREE.Fog("#d9d3c6", distance * 2.4, distance * 8);
+}
+
+function satelliteGround(centerX, centerZ, size, y) {
+  const half = size / 2;
+  const x0 = centerX - half;
+  const x1 = centerX + half;
+  const zSouth = centerZ + half;
+  const zNorth = centerZ - half;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+      [x0, y, zSouth, x1, y, zSouth, x1, y, zNorth, x0, y, zNorth],
+      3,
+    ),
+  );
+  geometry.setAttribute(
+    "uv",
+    new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2),
+  );
+  geometry.setIndex([0, 1, 2, 0, 2, 3]);
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(
+    geometry,
+    new THREE.MeshBasicMaterial({ color: "#e6dfd3" }),
+  );
+}
+
+function groundLonLat(center, size, bbox) {
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  const originLon = (minLon + maxLon) / 2;
+  const originLat = (minLat + maxLat) / 2;
+  const { mLon, mLat } = metersPerDegree(originLat);
+  const half = size / 2;
+  const xWest = center.x - half;
+  const xEast = center.x + half;
+  const zNorth = center.z - half;
+  const zSouth = center.z + half;
+  const [lonWest, latNorth] = localToLonLat(xWest, zNorth, originLon, originLat, mLon, mLat);
+  const [lonEast, latSouth] = localToLonLat(xEast, zSouth, originLon, originLat, mLon, mLat);
+  return { lonWest, lonEast, latSouth, latNorth };
+}
+
+async function applySatellite(ground, center, size, bbox) {
+  try {
+    const canvas = await stitchSatellite(groundLonLat(center, size, bbox), {
+      onProgress(done, total) {
+        const percent = Math.round((100 * done) / total);
+        setStatus(`Loading satellite ${percent}%`);
+      },
+    });
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    ground.material.color.set("#ffffff");
+    ground.material.map = texture;
+    ground.material.needsUpdate = true;
+    setStatus("Blue is the Saigon River. Drag to orbit.");
+  } catch {
+    setStatus("Satellite tiles failed. Drag to orbit.");
+  }
 }
 
 function setStatus(message, isError = false) {
@@ -71,24 +132,27 @@ function setStatus(message, isError = false) {
 async function loadMeta() {
   try {
     const response = await fetch(META_URL);
-    if (!response.ok) return;
+    if (!response.ok) return null;
     const meta = await response.json();
     if (typeof meta.building_count === "number") {
       buildingsEl.textContent = meta.building_count.toLocaleString("en-US");
     }
+    return meta;
   } catch {
-    // The model can still load if the summary file is missing.
+    return null;
   }
 }
 
-function loadModel() {
+function loadModel(meta) {
   const loader = new GLTFLoader();
   loader.load(
     MODEL_URL,
     (gltf) => {
       scene.add(gltf.scene);
-      frameObject(gltf.scene);
-      setStatus("Blue is the Saigon River. Drag to orbit.");
+      frameObject(gltf.scene, meta);
+      if (!meta?.bbox) {
+        setStatus("Blue is the Saigon River. Drag to orbit.");
+      }
     },
     (event) => {
       if (!event.total) return;
@@ -106,8 +170,7 @@ function loadModel() {
 
 resize();
 window.addEventListener("resize", resize);
-loadMeta();
-loadModel();
+loadMeta().then((meta) => loadModel(meta));
 
 renderer.setAnimationLoop(() => {
   controls.update();

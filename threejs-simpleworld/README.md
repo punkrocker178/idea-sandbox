@@ -4,6 +4,8 @@ LOD1 building massing for **Ho Chi Minh City, District 1**, generated from OpenS
 
 Buildings are extruded footprints (flat roofs). Where OSM has no `height` or `building:levels`, the model uses 3 floors at 3.2 m. The Saigon River (Sông Sài Gòn, OSM relation 3850169) is drawn as a blue surface, clipped to the district boundary. The GLB is centred on the district bounding box: +X east, +Y up, −Z north, in metres.
 
+OpenStreetMap does not publish satellite photos. The ground plane is textured at runtime with [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9) (zoom 16), aligned to that same local frame. Imagery © Esri, Maxar, Earthstar Geographics.
+
 The district box is Nominatim relation [2587287](https://www.openstreetmap.org/relation/2587287) (Quận 1), captured 2026-11-12:
 
 `106.6816889, 10.7535190, 106.7151954, 10.7969493` (min lon, min lat, max lon, max lat).
@@ -36,4 +38,5 @@ npm run model
 ```bash
 pip install pytest
 pytest
+node --test src/imagery.test.js
 ```
