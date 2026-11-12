@@ -1,0 +1,23 @@
+{
+  "name": "Ho Chi Minh City \u2014 District 1",
+  "theme": "Editorial Paper",
+  "bbox": [
+    106.6816889,
+    10.753519,
+    106.7151954,
+    10.7969493
+  ],
+  "building_count": 6139,
+  "road_count": 7899,
+  "total_road_km": 650.14,
+  "waterbody_count": 60,
+  "park_count": 234,
+  "tree_count": 443,
+  "source": "OpenStreetMap",
+  "license": "ODbL",
+  "lod": "LOD1",
+  "attribution": "\u00a9 OpenStreetMap contributors",
+  "generator": "osm2threejs 0.13.0",
+  "axes": "+X east, +Y up, -Z north, metres from the district centre",
+  "note": "The GLB contains extruded buildings only. osm2threejs keeps roads, parks, and water on the city model, but its GLB exporter writes building solids."
+}

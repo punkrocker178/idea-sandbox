@@ -1,0 +1,106 @@
+:root {
+  color-scheme: light;
+  --paper: #f5f2eb;
+  --ink: #2c2824;
+  --muted: #6d645b;
+  --line: rgba(44, 40, 36, 0.12);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+#app canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#panel {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  width: min(280px, calc(100vw - 40px));
+  padding: 18px 18px 14px;
+  background: rgba(253, 251, 247, 0.88);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+h1 {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 500;
+  line-height: 0.95;
+}
+
+.place {
+  margin: 6px 0 14px;
+  color: var(--muted);
+}
+
+#stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+#stats div {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+dt {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+dd {
+  margin: 2px 0 0;
+  font-size: 20px;
+}
+
+#status,
+.credit {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.credit {
+  margin-top: 10px;
+}
+
+.credit a {
+  color: inherit;
+}
+
+#status.is-error {
+  color: #8a3b2c;
+}
