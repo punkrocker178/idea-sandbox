@@ -70,6 +70,68 @@ def _gltf_json(data: bytes) -> dict:
     return json.loads(data[20 : 20 + json_len])
 
 
+def _open_way(way_id, points, tags):
+    """An open way through the given (lon, lat) points."""
+    nodes = []
+    node_ids = []
+    for index, (lon, lat) in enumerate(points):
+        node_id = way_id * 10 + index + 1
+        node_ids.append(node_id)
+        nodes.append({"type": "node", "id": node_id, "lon": lon, "lat": lat})
+    return nodes + [{"type": "way", "id": way_id, "nodes": node_ids, "tags": tags}]
+
+
+def test_streets_are_drawn_from_osm_highways_and_paths_are_not(tmp_path):
+    # Centre of the district box. A residential street runs east from here.
+    origin_lon = (DISTRICT1_BBOX[0] + DISTRICT1_BBOX[2]) / 2
+    origin_lat = (DISTRICT1_BBOX[1] + DISTRICT1_BBOX[3]) / 2
+    street = _open_way(
+        50,
+        [(origin_lon, origin_lat), (origin_lon + 0.002, origin_lat)],
+        {"highway": "residential", "name": "Đường Nguyễn Huệ"},
+    )
+    footway = _open_way(
+        60,
+        [(origin_lon, origin_lat + 0.01), (origin_lon + 0.001, origin_lat + 0.01)],
+        {"highway": "footway"},
+    )
+    tunnel = _open_way(
+        70,
+        [(origin_lon, origin_lat - 0.01), (origin_lon + 0.001, origin_lat - 0.01)],
+        {"highway": "primary", "tunnel": "yes"},
+    )
+    bridge = _open_way(
+        80,
+        [(origin_lon, origin_lat), (origin_lon + 0.001, origin_lat)],
+        {"highway": "primary", "bridge": "yes", "lanes": "4"},
+    )
+    payload = {"elements": street + footway + tunnel + bridge}
+
+    city = city_from_overpass(payload)
+    out = tmp_path / "streets.glb"
+    export_district_glb(city, [], out)
+    gltf = _gltf_json(out.read_bytes())
+
+    streets = next(material for material in gltf["materials"] if material["name"] == "streets")
+    streets_index = gltf["materials"].index(streets)
+    primitive = next(
+        item for item in gltf["meshes"][0]["primitives"] if item["material"] == streets_index
+    )
+    position = gltf["accessors"][primitive["attributes"]["POSITION"]]
+    min_x, min_y, min_z = position["min"]
+    max_x, max_y, max_z = position["max"]
+
+    # The street runs east. The 4-lane bridge is 14 m wide and sets the cross span.
+    assert max_x - min_x > 200
+    assert abs((max_z - min_z) - 14) < 0.3
+    # The footway is ~1.1 km north and the tunnel ~1.1 km south. Neither is drawn.
+    assert min_z > -20
+    assert max_z < 20
+    # Bridges sit above the river surface; surface streets stay near the ground.
+    assert min_y < 0.3
+    assert max_y > 0.4
+
+
 def test_saigon_river_is_a_blue_surface_inside_the_district(tmp_path):
     # The rectangle crosses the district's east edge (106.715) and must be clipped.
     river = _closed_way(20, 106.7100, 10.7700, 106.7300, 10.7740)

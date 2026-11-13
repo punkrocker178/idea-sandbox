@@ -9,6 +9,7 @@ const META_URL = "/models/district1.json";
 const app = document.querySelector("#app");
 const statusEl = document.querySelector("#status");
 const buildingsEl = document.querySelector("#stat-buildings");
+const streetsEl = document.querySelector("#stat-streets");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#f5f2eb");
@@ -118,9 +119,9 @@ async function applySatellite(ground, center, size, bbox) {
     ground.material.color.set("#ffffff");
     ground.material.map = texture;
     ground.material.needsUpdate = true;
-    setStatus("Blue is the Saigon River. Drag to orbit.");
+    setStatus("Brown streets follow OpenStreetMap. Blue is the Saigon River.");
   } catch {
-    setStatus("Satellite tiles failed. Drag to orbit.");
+        setStatus("Satellite tiles failed. Streets are still drawn. Drag to orbit.");
   }
 }
 
@@ -137,6 +138,9 @@ async function loadMeta() {
     if (typeof meta.building_count === "number") {
       buildingsEl.textContent = meta.building_count.toLocaleString("en-US");
     }
+    if (typeof meta.street_count === "number") {
+      streetsEl.textContent = meta.street_count.toLocaleString("en-US");
+    }
     return meta;
   } catch {
     return null;
@@ -151,7 +155,7 @@ function loadModel(meta) {
       scene.add(gltf.scene);
       frameObject(gltf.scene, meta);
       if (!meta?.bbox) {
-        setStatus("Blue is the Saigon River. Drag to orbit.");
+        setStatus("Brown streets follow OpenStreetMap. Blue is the Saigon River.");
       }
     },
     (event) => {

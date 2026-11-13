@@ -7,6 +7,7 @@ into a closed solid (LOD1). Untagged buildings default to 3 floors at 3.2 m.
 from __future__ import annotations
 
 import json
+import math
 import struct
 import sys
 import unicodedata
@@ -38,6 +39,34 @@ META_PATH = ROOT / "public" / "models" / "district1.json"
 # Clear blue against the paper ground. The theme's water swatch is grey-blue.
 RIVER_COLOR = "#2a6cb3"
 RIVER_Y_M = 0.35
+
+# Drivable streets and pedestrian malls. Footways, paths, and steps stay out so
+# the satellite ground remains visible between blocks.
+STREET_TYPES = frozenset(
+    {
+        "motorway",
+        "motorway_link",
+        "trunk",
+        "trunk_link",
+        "primary",
+        "primary_link",
+        "secondary",
+        "secondary_link",
+        "tertiary",
+        "tertiary_link",
+        "unclassified",
+        "residential",
+        "living_street",
+        "service",
+        "pedestrian",
+        "busway",
+        "road",
+    }
+)
+STREET_COLOR = "#5c4636"
+STREET_Y_M = 0.12
+BRIDGE_Y_M = 0.55
+MAX_STREET_WIDTH_M = 30.0
 
 
 def city_from_overpass(payload: dict) -> o3.CityModel3D:
@@ -209,13 +238,104 @@ def _append_view(binary: bytearray, payload: bytes, target: int, views: list) ->
     return len(views) - 1
 
 
-def export_district_glb(city: o3.CityModel3D, rings, output_path: Path) -> None:
-    """Write building solids plus the Saigon River as a blue water surface."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    city.to_glb(str(output_path))
-    if not rings:
-        return
+def _drawn_streets(city: o3.CityModel3D) -> list:
+    """Highways drawn as ribbons. Tunnels and footpaths are left out."""
+    streets = []
+    for road in city.roads:
+        if road.is_tunnel or road.highway_type not in STREET_TYPES:
+            continue
+        if len(road.centerline) < 2:
+            continue
+        streets.append(road)
+    return streets
 
+
+def _clean_centerline(points: list[tuple[float, float]]):
+    """Drop duplicates. A repeated closing point becomes a closed loop."""
+    cleaned = []
+    for east, north in points:
+        if not cleaned or math.hypot(east - cleaned[-1][0], north - cleaned[-1][1]) > 0.05:
+            cleaned.append((east, north))
+    closed = False
+    if (
+        len(cleaned) >= 3
+        and math.hypot(cleaned[0][0] - cleaned[-1][0], cleaned[0][1] - cleaned[-1][1]) <= 0.05
+    ):
+        cleaned = cleaned[:-1]
+        closed = True
+    return cleaned, closed
+
+
+def _left_offsets(points: list[tuple[float, float]], closed: bool):
+    """Unit left normals, mitred at corners and clamped so joins stay short."""
+
+    def left(start, end):
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.hypot(dx, dy)
+        return (-dy / length, dx / length)
+
+    count = len(points)
+
+    def at(index):
+        return points[index % count] if closed else points[index]
+
+    offsets = []
+    for index in range(count):
+        if not closed and index == 0:
+            offsets.append(left(points[0], points[1]))
+            continue
+        if not closed and index == count - 1:
+            offsets.append(left(points[-2], points[-1]))
+            continue
+        incoming = left(at(index - 1), points[index])
+        outgoing = left(points[index], at(index + 1))
+        mx = incoming[0] + outgoing[0]
+        my = incoming[1] + outgoing[1]
+        length = math.hypot(mx, my)
+        if length < 1e-6:
+            offsets.append(incoming)
+            continue
+        unit = (mx / length, my / length)
+        dot = incoming[0] * unit[0] + incoming[1] * unit[1]
+        if dot < 0.5:
+            offsets.append(incoming)
+        else:
+            offsets.append((unit[0] / dot, unit[1] / dot))
+    return offsets
+
+
+def street_surface(city: o3.CityModel3D):
+    """Flat street ribbons in the local frame: +X east, +Y up, −Z north."""
+    project = _local_projector(city)
+    positions: list[tuple[float, float, float]] = []
+    indices: list[int] = []
+    for road in _drawn_streets(city):
+        projected = [project(lon, lat) for lon, lat in road.centerline]
+        points, closed = _clean_centerline(projected)
+        if len(points) < 2:
+            continue
+        half = min(max(float(road.width_m), 0.5), MAX_STREET_WIDTH_M) / 2
+        elevation = BRIDGE_Y_M if road.is_bridge else STREET_Y_M
+        base = len(positions)
+        for (east, north), (nx, ny) in zip(points, _left_offsets(points, closed)):
+            left = (east + nx * half, north + ny * half)
+            right = (east - nx * half, north - ny * half)
+            positions.append((_f32(left[0]), _f32(elevation), _f32(-left[1])))
+            positions.append((_f32(right[0]), _f32(elevation), _f32(-right[1])))
+        segment_count = len(points) if closed else len(points) - 1
+        for index in range(segment_count):
+            nxt = (index + 1) % len(points)
+            left_index = base + index * 2
+            right_index = left_index + 1
+            next_left = base + nxt * 2
+            next_right = next_left + 1
+            indices.extend((left_index, right_index, next_left, right_index, next_right, next_left))
+    return positions, indices
+
+
+def _river_surface(city: o3.CityModel3D, rings):
+    """Triangulated Saigon River surface in the same local frame as the buildings."""
     project = _local_projector(city)
     positions: list[tuple[float, float, float]] = []
     indices: list[int] = []
@@ -230,10 +350,11 @@ def export_district_glb(city: o3.CityModel3D, rings, output_path: Path) -> None:
             positions.append((_f32(east), _f32(RIVER_Y_M), _f32(-north)))
         for a, b, c in triangles:
             indices.extend((base + a, base + b, base + c))
-    if not indices:
-        return
+    return positions, indices
 
-    gltf, binary = _read_glb(output_path)
+
+def _append_surface(gltf, binary, positions, indices, name, color, metallic, roughness) -> None:
+    """Add one double-sided triangle surface to the city mesh."""
     views = gltf.setdefault("bufferViews", [])
     accessors = gltf.setdefault("accessors", [])
     flat_pos = [_f32(coord) for vertex in positions for coord in vertex]
@@ -272,12 +393,12 @@ def export_district_glb(city: o3.CityModel3D, rings, output_path: Path) -> None:
     materials = gltf.setdefault("materials", [])
     materials.append(
         {
-            "name": "water",
+            "name": name,
             "doubleSided": True,
             "pbrMetallicRoughness": {
-                "baseColorFactor": _srgb_hex_to_linear_rgba(RIVER_COLOR, RIVER_COLOR),
-                "metallicFactor": 0.05,
-                "roughnessFactor": 0.2,
+                "baseColorFactor": _srgb_hex_to_linear_rgba(color, color),
+                "metallicFactor": metallic,
+                "roughnessFactor": roughness,
             },
         }
     )
@@ -293,6 +414,25 @@ def export_district_glb(city: o3.CityModel3D, rings, output_path: Path) -> None:
         gltf["nodes"][0]["mesh"] = 0
     if not gltf.get("buffers"):
         gltf["buffers"] = [{"byteLength": 0}]
+
+
+def export_district_glb(city: o3.CityModel3D, rings, output_path: Path) -> None:
+    """Write building solids, street ribbons, and the Saigon River surface."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    city.to_glb(str(output_path))
+    surfaces = []
+    river_positions, river_indices = _river_surface(city, rings)
+    if river_indices:
+        surfaces.append((river_positions, river_indices, "water", RIVER_COLOR, 0.05, 0.2))
+    street_positions, street_indices = street_surface(city)
+    if street_indices:
+        surfaces.append((street_positions, street_indices, "streets", STREET_COLOR, 0.0, 0.92))
+    if not surfaces:
+        return
+
+    gltf, binary = _read_glb(output_path)
+    for positions, indices, name, color, metallic, roughness in surfaces:
+        _append_surface(gltf, binary, positions, indices, name, color, metallic, roughness)
     _write_glb(output_path, gltf, binary)
 
 
@@ -306,14 +446,17 @@ def write_outputs(city: o3.CityModel3D, rings) -> None:
             "source": "OpenStreetMap",
             "license": "ODbL",
             "lod": "LOD1",
+            "street_count": len(_drawn_streets(city)),
+            "street_color": STREET_COLOR,
             "river": "Sông Sài Gòn",
             "river_color": RIVER_COLOR,
             "attribution": "© OpenStreetMap contributors",
             "generator": "osm2threejs 0.13.0",
             "axes": "+X east, +Y up, -Z north, metres from the district centre",
             "note": (
-                "Buildings are LOD1 extrusions. The Saigon River is the blue "
-                "water surface clipped to the District 1 boundary."
+                "Buildings are LOD1 extrusions. Streets are ribbons from OSM "
+                "highways. The Saigon River is the blue water surface clipped "
+                "to the District 1 boundary."
             ),
         }
     )

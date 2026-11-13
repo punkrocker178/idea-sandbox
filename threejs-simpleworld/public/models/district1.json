@@ -7,19 +7,21 @@
     106.7151954,
     10.7969493
   ],
-  "building_count": 6139,
-  "road_count": 7899,
-  "total_road_km": 650.14,
+  "building_count": 6159,
+  "road_count": 7927,
+  "total_road_km": 650.82,
   "waterbody_count": 60,
   "park_count": 234,
   "tree_count": 443,
   "source": "OpenStreetMap",
   "license": "ODbL",
   "lod": "LOD1",
+  "street_count": 6585,
+  "street_color": "#5c4636",
   "river": "S\u00f4ng S\u00e0i G\u00f2n",
   "river_color": "#2a6cb3",
   "attribution": "\u00a9 OpenStreetMap contributors",
   "generator": "osm2threejs 0.13.0",
   "axes": "+X east, +Y up, -Z north, metres from the district centre",
-  "note": "Buildings are LOD1 extrusions. The Saigon River is the blue water surface clipped to the District 1 boundary."
+  "note": "Buildings are LOD1 extrusions. Streets are ribbons from OSM highways. The Saigon River is the blue water surface clipped to the District 1 boundary."
 }

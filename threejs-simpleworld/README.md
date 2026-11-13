@@ -2,7 +2,7 @@
 
 LOD1 building massing for **Ho Chi Minh City, District 1**, generated from OpenStreetMap with [osm2threejs](https://pypi.org/project/osm2threejs/) and viewed in Three.js.
 
-Buildings are extruded footprints (flat roofs). Where OSM has no `height` or `building:levels`, the model uses 3 floors at 3.2 m. The Saigon River (Sông Sài Gòn, OSM relation 3850169) is drawn as a blue surface, clipped to the district boundary. The GLB is centred on the district bounding box: +X east, +Y up, −Z north, in metres.
+Buildings are extruded footprints (flat roofs). Where OSM has no `height` or `building:levels`, the model uses 3 floors at 3.2 m. Streets are flat ribbons from OSM `highway` ways (motorway through service and pedestrian), using each way's width. Footways, paths, steps, and tunnels are left out. Bridges sit above the river. The Saigon River (Sông Sài Gòn, OSM relation 3850169) is drawn as a blue surface, clipped to the district boundary. The GLB is centred on the district bounding box: +X east, +Y up, −Z north, in metres.
 
 OpenStreetMap does not publish satellite photos. The ground plane is textured at runtime with [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9) (zoom 16), aligned to that same local frame. Imagery © Esri, Maxar, Earthstar Geographics.
 
