@@ -46,6 +46,9 @@ META_PATH = ROOT / "public" / "models" / "district1.json"
 # Clear blue against the paper ground. The theme's water swatch is grey-blue.
 RIVER_COLOR = "#2a6cb3"
 RIVER_Y_M = 0.35
+# Foliage green. Trunks and crowns share one material so the mesh stays small.
+TREE_COLOR = "#3c8f4a"
+TREE_Y_M = 0.25
 
 # Drivable streets and pedestrian malls. Footways, paths, and steps stay out so
 # the satellite ground remains visible between blocks.
@@ -175,8 +178,8 @@ def _clip_polygon(ring: list[tuple[float, float]], bbox: tuple[float, float, flo
     return polygon
 
 
-def saigon_river_rings(payload: dict):
-    """Return (outer, holes) lon/lat rings for the Saigon River, clipped to District 1."""
+def _element_index(payload: dict):
+    """Node coordinates and way node lists from an Overpass document."""
     nodes: dict = {}
     ways: dict = {}
     for element in payload.get("elements", []):
@@ -184,22 +187,70 @@ def saigon_river_rings(payload: dict):
             nodes[element["id"]] = (float(element["lon"]), float(element["lat"]))
         elif element.get("type") == "way":
             ways[element["id"]] = list(element.get("nodes") or [])
+    return nodes, ways
 
+
+def _clip_parts(parts):
+    """Clip (outer, holes) lon/lat rings to the district box."""
     clipped = []
+    for outer, holes in parts:
+        outer_clip = _clip_polygon(outer, DISTRICT1_BBOX)
+        if len(outer_clip) < 3:
+            continue
+        hole_clips = []
+        for hole in holes:
+            hole_clip = _clip_polygon(hole, DISTRICT1_BBOX)
+            if len(hole_clip) >= 3:
+                hole_clips.append(hole_clip)
+        clipped.append((outer_clip, hole_clips))
+    return clipped
+
+
+def _is_water_area(tags: dict) -> bool:
+    """True for a water polygon. Centerlines, tunnels, and culverts are left out."""
+    if tags.get("tunnel") in {"yes", "culvert"}:
+        return False
+    if tags.get("type") == "waterway":
+        return False
+    if tags.get("natural") == "water":
+        return True
+    return tags.get("waterway") in {"riverbank", "dock"}
+
+
+def _closed_way_ring(element: dict, nodes: dict):
+    """The way's coordinates when it is a closed ring. Open ways return None."""
+    coords = [nodes[node_id] for node_id in element.get("nodes") or [] if node_id in nodes]
+    if len(coords) < 4 or coords[0] != coords[-1]:
+        return None
+    return coords
+
+
+def saigon_river_rings(payload: dict):
+    """Return (outer, holes) lon/lat rings for the Saigon River, clipped to District 1."""
+    nodes, ways = _element_index(payload)
+    parts = []
     for element in payload.get("elements", []):
         if element.get("type") != "relation" or not _is_saigon_river(element.get("tags") or {}):
             continue
-        for outer, holes in _multipolygon_parts(element, ways, nodes):
-            outer_clip = _clip_polygon(outer, DISTRICT1_BBOX)
-            if len(outer_clip) < 3:
-                continue
-            hole_clips = []
-            for hole in holes:
-                hole_clip = _clip_polygon(hole, DISTRICT1_BBOX)
-                if len(hole_clip) >= 3:
-                    hole_clips.append(hole_clip)
-            clipped.append((outer_clip, hole_clips))
-    return clipped
+        parts.extend(_multipolygon_parts(element, ways, nodes))
+    return _clip_parts(parts)
+
+
+def osm_water_rings(payload: dict):
+    """Every OSM water polygon in the district: the river, canals, lakes, and ponds."""
+    nodes, ways = _element_index(payload)
+    parts = []
+    for element in payload.get("elements", []):
+        tags = element.get("tags") or {}
+        if not _is_water_area(tags):
+            continue
+        if element.get("type") == "relation" and tags.get("type") == "multipolygon":
+            parts.extend(_multipolygon_parts(element, ways, nodes))
+        elif element.get("type") == "way":
+            ring = _closed_way_ring(element, nodes)
+            if ring is not None:
+                parts.append((ring, []))
+    return _clip_parts(parts)
 
 
 def _read_glb(path: Path) -> tuple[dict, bytearray]:
@@ -360,13 +411,82 @@ def _river_surface(city: o3.CityModel3D, rings):
     return positions, indices
 
 
-def _append_surface(gltf, binary, positions, indices, name, color, metallic, roughness) -> None:
+def _face_normal(a, b, c):
+    """Unit normal of triangle a-b-c."""
+    ax, ay, az = a
+    bx, by, bz = b
+    cx, cy, cz = c
+    ux, uy, uz = bx - ax, by - ay, bz - az
+    vx, vy, vz = cx - ax, cy - ay, cz - az
+    nx = uy * vz - uz * vy
+    ny = uz * vx - ux * vz
+    nz = ux * vy - uy * vx
+    length = math.hypot(nx, ny, nz) or 1.0
+    return (nx / length, ny / length, nz / length)
+
+
+def _add_triangle(positions, normals, indices, a, b, c) -> None:
+    """Append one flat-shaded triangle."""
+    normal = _face_normal(a, b, c)
+    base = len(positions)
+    for vertex in (a, b, c):
+        positions.append(tuple(_f32(coord) for coord in vertex))
+        normals.append(normal)
+    indices.extend((base, base + 1, base + 2))
+
+
+def _append_tree(positions, normals, indices, east, north, height, radius) -> None:
+    """A square trunk and a six-sided crown. +X east, +Y up, −Z north."""
+    z = -north
+    y0 = TREE_Y_M
+    trunk_top = y0 + min(2.2, height * 0.38)
+    apex = (east, y0 + height, z)
+    trunk_radius = 0.16
+    for index in range(4):
+        angle = math.tau * index / 4
+        nxt = math.tau * (index + 1) / 4
+        p0 = (east + math.cos(angle) * trunk_radius, y0, z + math.sin(angle) * trunk_radius)
+        p1 = (east + math.cos(nxt) * trunk_radius, y0, z + math.sin(nxt) * trunk_radius)
+        p2 = (east + math.cos(nxt) * trunk_radius, trunk_top, z + math.sin(nxt) * trunk_radius)
+        p3 = (east + math.cos(angle) * trunk_radius, trunk_top, z + math.sin(angle) * trunk_radius)
+        _add_triangle(positions, normals, indices, p0, p1, p2)
+        _add_triangle(positions, normals, indices, p0, p2, p3)
+    crown_y = y0 + height * 0.42
+    ring = []
+    for index in range(6):
+        angle = math.tau * index / 6
+        ring.append((east + math.cos(angle) * radius, crown_y, z + math.sin(angle) * radius))
+    underside = (east, crown_y - radius * 0.55, z)
+    for index in range(6):
+        nxt = (index + 1) % 6
+        _add_triangle(positions, normals, indices, apex, ring[index], ring[nxt])
+        _add_triangle(positions, normals, indices, underside, ring[nxt], ring[index])
+
+
+def tree_surface(city: o3.CityModel3D):
+    """One mesh for every OSM natural=tree node."""
+    project = _local_projector(city)
+    positions: list[tuple[float, float, float]] = []
+    normals: list[tuple[float, float, float]] = []
+    indices: list[int] = []
+    for tree in city.trees:
+        height = float(tree.height_m) if tree.height_m and tree.height_m > 0 else 6.0
+        radius = float(tree.canopy_radius_m) if tree.canopy_radius_m and tree.canopy_radius_m > 0 else 2.5
+        east, north = project(tree.lon, tree.lat)
+        _append_tree(positions, normals, indices, east, north, height, radius)
+    return positions, normals, indices
+
+
+def _append_surface(gltf, binary, positions, indices, name, color, metallic, roughness, normals=None) -> None:
     """Add one double-sided triangle surface to the city mesh."""
     views = gltf.setdefault("bufferViews", [])
     accessors = gltf.setdefault("accessors", [])
     flat_pos = [_f32(coord) for vertex in positions for coord in vertex]
     pos_view = _append_view(binary, struct.pack(f"<{len(flat_pos)}f", *flat_pos), 34962, views)
-    flat_nrm = [coord for vertex in positions for coord in (0.0, 1.0, 0.0)]
+    if normals is None:
+        flat_nrm = [coord for vertex in positions for coord in (0.0, 1.0, 0.0)]
+    else:
+        flat_nrm = [_f32(coord) for normal in normals for coord in normal]
     nrm_view = _append_view(binary, struct.pack(f"<{len(flat_nrm)}f", *flat_nrm), 34962, views)
     idx_view = _append_view(binary, struct.pack(f"<{len(indices)}I", *indices), 34963, views)
 
@@ -424,22 +544,27 @@ def _append_surface(gltf, binary, positions, indices, name, color, metallic, rou
 
 
 def export_district_glb(city: o3.CityModel3D, rings, output_path: Path) -> None:
-    """Write building solids, street ribbons, and the Saigon River surface."""
+    """Write building solids, water, trees, and street ribbons."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     city.to_glb(str(output_path))
     surfaces = []
     river_positions, river_indices = _river_surface(city, rings)
     if river_indices:
-        surfaces.append((river_positions, river_indices, "water", RIVER_COLOR, 0.05, 0.2))
+        surfaces.append((river_positions, river_indices, "water", RIVER_COLOR, 0.05, 0.2, None))
+    tree_positions, tree_normals, tree_indices = tree_surface(city)
+    if tree_indices:
+        surfaces.append((tree_positions, tree_indices, "trees", TREE_COLOR, 0.0, 0.85, tree_normals))
     street_positions, street_indices = street_surface(city)
     if street_indices:
-        surfaces.append((street_positions, street_indices, "streets", STREET_COLOR, 0.0, 0.92))
+        surfaces.append((street_positions, street_indices, "streets", STREET_COLOR, 0.0, 0.92, None))
     if not surfaces:
         return
 
     gltf, binary = _read_glb(output_path)
-    for positions, indices, name, color, metallic, roughness in surfaces:
-        _append_surface(gltf, binary, positions, indices, name, color, metallic, roughness)
+    for positions, indices, name, color, metallic, roughness, normals in surfaces:
+        _append_surface(
+            gltf, binary, positions, indices, name, color, metallic, roughness, normals
+        )
     _write_glb(output_path, gltf, binary)
 
 
@@ -460,6 +585,8 @@ def write_outputs(city: o3.CityModel3D, rings) -> None:
             "street_color": STREET_COLOR,
             "river": "Sông Sài Gòn",
             "river_color": RIVER_COLOR,
+            "water_surface_count": len(rings),
+            "tree_color": TREE_COLOR,
             "attribution": (
                 "© OpenStreetMap contributors. Unmapped buildings from the "
                 "Global Building Atlas (Zhu et al.), CC BY-NC 4.0."
@@ -470,8 +597,10 @@ def write_outputs(city: o3.CityModel3D, rings) -> None:
                 "Buildings are LOD1 extrusions. OpenStreetMap footprints are "
                 "kept. Global Building Atlas footprints are added where they "
                 "are not already an OpenStreetMap building or water surface. "
-                "Streets are ribbons from OSM highways. The Saigon River is "
-                "the blue water surface clipped to the District 1 boundary."
+                "Streets are ribbons from OSM highways. Blue surfaces are OSM "
+                "water polygons clipped to the District 1 boundary, including "
+                "the Saigon River, canals, lakes, and ponds. Green trees are "
+                "OSM natural=tree nodes."
             ),
         }
     )
@@ -490,8 +619,8 @@ def main() -> int:
     print(f"Atlas footprints in the district box: {len(records)}", flush=True)
     added = add_missing_atlas_buildings(city, records)
     print(f"Atlas buildings added: {added}", flush=True)
-    rings = saigon_river_rings(payload)
-    print(f"Saigon River parts: {len(rings)}", flush=True)
+    rings = osm_water_rings(payload)
+    print(f"Water surfaces: {len(rings)}. Trees: {city.tree_count}", flush=True)
     write_outputs(city, rings)
     return 0
 

@@ -7,6 +7,7 @@ from scripts.build_district1 import (
     DISTRICT1_BBOX,
     city_from_overpass,
     export_district_glb,
+    osm_water_rings,
     saigon_river_rings,
 )
 
@@ -185,3 +186,88 @@ def test_saigon_river_is_a_blue_surface_inside_the_district(tmp_path):
     # bank sits another 1.6 km further east and must not survive.
     assert max_x < 2000
     assert max_x > 0
+
+
+def test_osm_water_includes_ponds_and_canals_and_skips_centerlines(tmp_path):
+    origin_lon = (DISTRICT1_BBOX[0] + DISTRICT1_BBOX[2]) / 2
+    origin_lat = (DISTRICT1_BBOX[1] + DISTRICT1_BBOX[3]) / 2
+    pond = _closed_way(
+        30,
+        origin_lon,
+        origin_lat,
+        origin_lon + 0.0004,
+        origin_lat + 0.0003,
+        {"natural": "water", "water": "pond"},
+    )
+    canal = _closed_way(
+        31,
+        origin_lon + 0.002,
+        origin_lat,
+        origin_lon + 0.004,
+        origin_lat + 0.0002,
+        {"natural": "water", "water": "canal", "name": "Kênh Bến Nghé"},
+    )
+    centerline = _open_way(
+        32,
+        [(origin_lon, origin_lat), (origin_lon + 0.003, origin_lat)],
+        {"waterway": "river", "name": "Sông Sài Gòn"},
+    )
+    culvert = _closed_way(
+        33,
+        origin_lon,
+        origin_lat + 0.004,
+        origin_lon + 0.0003,
+        origin_lat + 0.0043,
+        {"natural": "water", "tunnel": "culvert"},
+    )
+    payload = {"elements": pond + canal + centerline + culvert}
+
+    rings = osm_water_rings(payload)
+    assert len(rings) == 2
+
+    city = city_from_overpass(payload)
+    out = tmp_path / "water.glb"
+    export_district_glb(city, rings, out)
+    gltf = _gltf_json(out.read_bytes())
+    assert any(material["name"] == "water" for material in gltf["materials"])
+    assert all(material["name"] != "trees" for material in gltf["materials"])
+
+
+def test_osm_trees_are_green_and_stand_above_the_ground(tmp_path):
+    origin_lon = (DISTRICT1_BBOX[0] + DISTRICT1_BBOX[2]) / 2
+    origin_lat = (DISTRICT1_BBOX[1] + DISTRICT1_BBOX[3]) / 2
+    payload = {
+        "elements": [
+            {
+                "type": "node",
+                "id": 7,
+                "lon": origin_lon,
+                "lat": origin_lat,
+                "tags": {"natural": "tree"},
+            }
+        ]
+    }
+    city = city_from_overpass(payload)
+    out = tmp_path / "trees.glb"
+    export_district_glb(city, [], out)
+    gltf = _gltf_json(out.read_bytes())
+
+    trees = next(material for material in gltf["materials"] if material["name"] == "trees")
+    red, green, _blue, _alpha = trees["pbrMetallicRoughness"]["baseColorFactor"]
+    assert green > red
+
+    trees_index = gltf["materials"].index(trees)
+    primitive = next(
+        item for item in gltf["meshes"][0]["primitives"] if item["material"] == trees_index
+    )
+    position = gltf["accessors"][primitive["attributes"]["POSITION"]]
+    min_x, min_y, min_z = position["min"]
+    max_x, max_y, max_z = position["max"]
+    # The node sits on the district centre, so the crown is a few metres wide.
+    assert abs(min_x) < 5
+    assert abs(max_x) < 5
+    assert abs(min_z) < 5
+    assert abs(max_z) < 5
+    assert min_y < 0.5
+    assert max_y > 5
+    assert city.tree_count == 1

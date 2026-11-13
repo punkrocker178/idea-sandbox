@@ -10,6 +10,7 @@ const app = document.querySelector("#app");
 const statusEl = document.querySelector("#status");
 const buildingsEl = document.querySelector("#stat-buildings");
 const streetsEl = document.querySelector("#stat-streets");
+const treesEl = document.querySelector("#stat-trees");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#f5f2eb");
@@ -120,7 +121,7 @@ async function applySatellite(ground, center, size, bbox) {
     ground.material.map = texture;
     ground.material.needsUpdate = true;
     setStatus(
-      "Brown streets follow OpenStreetMap. Houses it does not map come from the Global Building Atlas. Blue is the Saigon River.",
+      "Brown streets, blue water, and green trees follow OpenStreetMap. Houses it does not map come from the Global Building Atlas.",
     );
   } catch {
         setStatus("Satellite tiles failed. Streets are still drawn. Drag to orbit.");
@@ -143,6 +144,9 @@ async function loadMeta() {
     if (typeof meta.street_count === "number") {
       streetsEl.textContent = meta.street_count.toLocaleString("en-US");
     }
+    if (typeof meta.tree_count === "number") {
+      treesEl.textContent = meta.tree_count.toLocaleString("en-US");
+    }
     return meta;
   } catch {
     return null;
@@ -158,7 +162,7 @@ function loadModel(meta) {
       frameObject(gltf.scene, meta);
       if (!meta?.bbox) {
         setStatus(
-          "Brown streets follow OpenStreetMap. Houses it does not map come from the Global Building Atlas. Blue is the Saigon River.",
+          "Brown streets, blue water, and green trees follow OpenStreetMap. Houses it does not map come from the Global Building Atlas.",
         );
       }
     },
