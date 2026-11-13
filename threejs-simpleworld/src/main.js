@@ -119,7 +119,9 @@ async function applySatellite(ground, center, size, bbox) {
     ground.material.color.set("#ffffff");
     ground.material.map = texture;
     ground.material.needsUpdate = true;
-    setStatus("Brown streets follow OpenStreetMap. Blue is the Saigon River.");
+    setStatus(
+      "Brown streets follow OpenStreetMap. Houses it does not map come from the Global Building Atlas. Blue is the Saigon River.",
+    );
   } catch {
         setStatus("Satellite tiles failed. Streets are still drawn. Drag to orbit.");
   }
@@ -155,7 +157,9 @@ function loadModel(meta) {
       scene.add(gltf.scene);
       frameObject(gltf.scene, meta);
       if (!meta?.bbox) {
-        setStatus("Brown streets follow OpenStreetMap. Blue is the Saigon River.");
+        setStatus(
+          "Brown streets follow OpenStreetMap. Houses it does not map come from the Global Building Atlas. Blue is the Saigon River.",
+        );
       }
     },
     (event) => {

@@ -1,7 +1,8 @@
-"""Build a LOD1 GLB of Ho Chi Minh City District 1 from OpenStreetMap.
+"""Build a LOD1 GLB of Ho Chi Minh City District 1.
 
-The GLB is what the Three.js viewer loads. osm2threejs extrudes each footprint
-into a closed solid (LOD1). Untagged buildings default to 3 floors at 3.2 m.
+The GLB is what the Three.js viewer loads. osm2threejs extrudes each OpenStreetMap
+footprint into a closed solid. Global Building Atlas footprints fill houses OSM
+does not map. Untagged buildings default to 3 floors at 3.2 m.
 """
 
 from __future__ import annotations
@@ -15,6 +16,13 @@ from pathlib import Path
 
 import osm2threejs as o3
 from osm2threejs.exporters import _f32, _local_projector, _srgb_hex_to_linear_rgba
+
+# `npm run model` executes this file, so the project root is not on sys.path yet.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.atlas_gap import add_missing_atlas_buildings, fetch_atlas_records
 from osm2threejs.fetcher import OVERPASS_SERVER_TIMEOUT_S, BoundingBox, OsmDataFetcher, query_overpass
 from osm2threejs.geometry import _multipolygon_parts
 from osm2threejs.triangulation import triangulate_polygon
@@ -32,7 +40,6 @@ OVERPASS_ENDPOINTS = (
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 )
 
-ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = ROOT / "public" / "models" / "district1.glb"
 META_PATH = ROOT / "public" / "models" / "district1.json"
 
@@ -441,22 +448,30 @@ def write_outputs(city: o3.CityModel3D, rings) -> None:
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     export_district_glb(city, rings, MODEL_PATH)
     summary = city.summary()
+    atlas_count = sum(str(building.osm_id).startswith("gba:") for building in city.buildings)
     summary.update(
         {
-            "source": "OpenStreetMap",
-            "license": "ODbL",
+            "source": "OpenStreetMap + Global Building Atlas",
+            "license": "ODbL; CC BY-NC 4.0",
             "lod": "LOD1",
+            "osm_building_count": city.building_count - atlas_count,
+            "atlas_building_count": atlas_count,
             "street_count": len(_drawn_streets(city)),
             "street_color": STREET_COLOR,
             "river": "Sông Sài Gòn",
             "river_color": RIVER_COLOR,
-            "attribution": "© OpenStreetMap contributors",
+            "attribution": (
+                "© OpenStreetMap contributors. Unmapped buildings from the "
+                "Global Building Atlas (Zhu et al.), CC BY-NC 4.0."
+            ),
             "generator": "osm2threejs 0.13.0",
             "axes": "+X east, +Y up, -Z north, metres from the district centre",
             "note": (
-                "Buildings are LOD1 extrusions. Streets are ribbons from OSM "
-                "highways. The Saigon River is the blue water surface clipped "
-                "to the District 1 boundary."
+                "Buildings are LOD1 extrusions. OpenStreetMap footprints are "
+                "kept. Global Building Atlas footprints are added where they "
+                "are not already an OpenStreetMap building or water surface. "
+                "Streets are ribbons from OSM highways. The Saigon River is "
+                "the blue water surface clipped to the District 1 boundary."
             ),
         }
     )
@@ -469,6 +484,12 @@ def main() -> int:
     payload = fetch_overpass()
     print(f"Overpass elements: {len(payload.get('elements', []))}", flush=True)
     city = city_from_overpass(payload)
+    print(f"OpenStreetMap buildings: {city.building_count}", flush=True)
+    print("Querying the Global Building Atlas for District 1…", flush=True)
+    records = fetch_atlas_records(DISTRICT1_BBOX)
+    print(f"Atlas footprints in the district box: {len(records)}", flush=True)
+    added = add_missing_atlas_buildings(city, records)
+    print(f"Atlas buildings added: {added}", flush=True)
     rings = saigon_river_rings(payload)
     print(f"Saigon River parts: {len(rings)}", flush=True)
     write_outputs(city, rings)

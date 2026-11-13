@@ -1,1 +1,3 @@
 osm2threejs==0.13.0
+duckdb>=1.1
+shapely>=2.0
