@@ -1,7 +1,13 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { createFlyControls } from "./fly.js";
 import { formatMapCoordinate, mapLonLat, stitchSatellite } from "./imagery.js";
+
+const IDLE_HINT = "Press F to fly. Mark reads latitude and longitude from the district map.";
+const MARK_HINT = "Click the city. The pin uses the map latitude and longitude.";
+const FLY_HINT = "Fly: WASD move, Q/E or Space/Ctrl height, Shift faster, Esc orbit.";
+const LOCK_HINT = "Pointer lock was blocked. Orbit is unchanged.";
 
 const MODEL_URL = "/models/district1.glb";
 const META_URL = "/models/district1.json";
@@ -44,8 +50,14 @@ const markGroup = new THREE.Group();
 markGroup.name = "marks";
 scene.add(markGroup);
 
+const fly = createFlyControls(renderer.domElement);
+const clock = new THREE.Clock();
+const lookDirection = new THREE.Vector3();
+
 let mapBbox = null;
 let markArmed = false;
+let flying = false;
+let districtSpan = 0;
 const marks = [];
 let press = null;
 
@@ -62,6 +74,8 @@ function frameObject(object, meta) {
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const span = Math.max(size.x, size.y, size.z, 1);
+  districtSpan = span;
+  fly.setSpan(span);
 
   const groundSize = Math.max(size.x, size.z) * 1.35;
   const groundY = box.min.y - 0.2;
@@ -139,12 +153,9 @@ function showMarkedPoint(point) {
   writeDegrees(coordLonEl, point?.longitude);
 }
 
-function pickMapPoint(event) {
+function sampleMap(ndcX, ndcY) {
   if (!mapBbox) return null;
-  const rect = renderer.domElement.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) return null;
-  pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  pointerNdc.set(ndcX, ndcY);
   raycaster.setFromCamera(pointerNdc, camera);
   const hit = raycaster
     .intersectObjects(scene.children, true)
@@ -152,6 +163,14 @@ function pickMapPoint(event) {
   if (!hit) return null;
   const { longitude, latitude } = mapLonLat(hit.point.x, hit.point.z, mapBbox);
   return { longitude, latitude, x: hit.point.x, y: hit.point.y, z: hit.point.z };
+}
+
+function pickMapPoint(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return null;
+  const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  return sampleMap(ndcX, ndcY);
 }
 
 function renderMarkList() {
@@ -225,16 +244,70 @@ function clearMarks() {
   renderMarkList();
 }
 
+function showHint(message) {
+  coordHintEl.textContent = message;
+}
+
 function setMarkTool(armed) {
   markArmed = armed;
   markButton.setAttribute("aria-pressed", String(armed));
   markButton.textContent = armed ? "Marking" : "Mark point";
   controls.mouseButtons.LEFT = armed ? null : THREE.MOUSE.ROTATE;
   renderer.domElement.classList.toggle("is-marking", armed);
-  coordHintEl.textContent = armed
-    ? "Click the city. The pin uses the map latitude and longitude."
-    : "Mark reads latitude and longitude from the district map.";
+  if (!flying) showHint(armed ? MARK_HINT : IDLE_HINT);
 }
+
+function enterFly() {
+  flying = true;
+  setMarkTool(false);
+  controls.enabled = false;
+  fly.engage(camera);
+  showHint(FLY_HINT);
+}
+
+function exitFly() {
+  flying = false;
+  fly.release();
+  camera.getWorldDirection(lookDirection);
+  controls.target.copy(camera.position).addScaledVector(lookDirection, districtSpan * 0.15);
+  const offset = lookDirection.copy(camera.position).sub(controls.target);
+  const phi = Math.atan2(Math.hypot(offset.x, offset.z), offset.y);
+  controls.maxPolarAngle = Math.max(Math.PI / 2 - 0.05, Math.min(Math.PI - 0.01, phi));
+  controls.enabled = true;
+  controls.update();
+  showHint(markArmed ? MARK_HINT : IDLE_HINT);
+}
+
+function updateFlyReadout() {
+  const point = sampleMap(0, 0);
+  if (!point) {
+    coordCursorEl.textContent = "Look —";
+    if (marks.length === 0) showMarkedPoint(null);
+    else showMarkedPoint(marks[marks.length - 1]);
+    return;
+  }
+  showMarkedPoint(point);
+  coordCursorEl.textContent = `Look ${formatMapCoordinate(point.latitude)}°, ${formatMapCoordinate(point.longitude)}°`;
+}
+
+window.addEventListener("keydown", (event) => {
+  if (event.code !== "KeyF" || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (!districtSpan || flying) return;
+  const lockRequest = renderer.domElement.requestPointerLock();
+  lockRequest?.catch?.(() => {
+    if (!flying) showHint(LOCK_HINT);
+  });
+});
+
+document.addEventListener("pointerlockchange", () => {
+  const locked = document.pointerLockElement === renderer.domElement;
+  if (locked && !flying) enterFly();
+  if (!locked && flying) exitFly();
+});
+
+document.addEventListener("pointerlockerror", () => {
+  if (!flying) showHint(LOCK_HINT);
+});
 
 const pinAnchor = new THREE.Vector3();
 
@@ -256,6 +329,7 @@ clearButton.addEventListener("click", () => {
 });
 
 renderer.domElement.addEventListener("pointermove", (event) => {
+  if (flying) return;
   const point = pickMapPoint(event);
   if (!point) {
     coordCursorEl.textContent = "Cursor —";
@@ -267,13 +341,14 @@ renderer.domElement.addEventListener("pointermove", (event) => {
 });
 
 renderer.domElement.addEventListener("pointerleave", () => {
+  if (flying) return;
   press = null;
   coordCursorEl.textContent = "Cursor —";
   if (marks.length === 0) showMarkedPoint(null);
 });
 
 renderer.domElement.addEventListener("pointerdown", (event) => {
-  if (!markArmed || event.button !== 0) return;
+  if (flying || !markArmed || event.button !== 0) return;
   press = { x: event.clientX, y: event.clientY };
 });
 
@@ -368,8 +443,16 @@ resize();
 window.addEventListener("resize", resize);
 loadMeta().then((meta) => loadModel(meta));
 
+showHint(IDLE_HINT);
+
 renderer.setAnimationLoop(() => {
-  controls.update();
+  const delta = clock.getDelta();
+  if (flying) {
+    fly.update(camera, delta);
+    updateFlyReadout();
+  } else {
+    controls.update();
+  }
   scalePins();
   renderer.render(scene, camera);
 });
