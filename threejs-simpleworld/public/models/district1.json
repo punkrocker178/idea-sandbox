@@ -1,0 +1,31 @@
+{
+  "name": "Ho Chi Minh City \u2014 District 1",
+  "theme": "Editorial Paper",
+  "bbox": [
+    106.6816889,
+    10.753519,
+    106.7151954,
+    10.7969493
+  ],
+  "building_count": 38069,
+  "road_count": 7927,
+  "total_road_km": 650.82,
+  "waterbody_count": 60,
+  "park_count": 234,
+  "tree_count": 443,
+  "source": "OpenStreetMap + Global Building Atlas",
+  "license": "ODbL; CC BY-NC 4.0",
+  "lod": "LOD1",
+  "osm_building_count": 6159,
+  "atlas_building_count": 31910,
+  "street_count": 6585,
+  "street_color": "#5c4636",
+  "river": "S\u00f4ng S\u00e0i G\u00f2n",
+  "river_color": "#2a6cb3",
+  "water_surface_count": 51,
+  "tree_color": "#3c8f4a",
+  "attribution": "\u00a9 OpenStreetMap contributors. Unmapped buildings from the Global Building Atlas (Zhu et al.), CC BY-NC 4.0.",
+  "generator": "osm2threejs 0.13.0",
+  "axes": "+X east, +Y up, -Z north, metres from the district centre",
+  "note": "Buildings are LOD1 extrusions. OpenStreetMap footprints are kept. Global Building Atlas footprints are added where they are not already an OpenStreetMap building or water surface. Streets are ribbons from OSM highways. Blue surfaces are OSM water polygons clipped to the District 1 boundary, including the Saigon River, canals, lakes, and ponds. Green trees are OSM natural=tree nodes."
+}
