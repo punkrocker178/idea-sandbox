@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { localToLonLat, metersPerDegree, stitchSatellite } from "./imagery.js";
+import { formatMapCoordinate, mapLonLat, stitchSatellite } from "./imagery.js";
 
 const MODEL_URL = "/models/district1.glb";
 const META_URL = "/models/district1.json";
@@ -11,6 +11,13 @@ const statusEl = document.querySelector("#status");
 const buildingsEl = document.querySelector("#stat-buildings");
 const streetsEl = document.querySelector("#stat-streets");
 const treesEl = document.querySelector("#stat-trees");
+const coordLatEl = document.querySelector("#coord-lat");
+const coordLonEl = document.querySelector("#coord-lon");
+const coordCursorEl = document.querySelector("#coord-cursor");
+const coordHintEl = document.querySelector("#coord-hint");
+const markButton = document.querySelector("#mark-tool");
+const clearButton = document.querySelector("#clear-marks");
+const markListEl = document.querySelector("#mark-list");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#f5f2eb");
@@ -30,6 +37,17 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.maxPolarAngle = Math.PI / 2 - 0.05;
 controls.target.set(0, 0, 0);
+
+const raycaster = new THREE.Raycaster();
+const pointerNdc = new THREE.Vector2();
+const markGroup = new THREE.Group();
+markGroup.name = "marks";
+scene.add(markGroup);
+
+let mapBbox = null;
+let markArmed = false;
+const marks = [];
+let press = null;
 
 function resize() {
   const width = app.clientWidth || window.innerWidth;
@@ -92,19 +110,181 @@ function satelliteGround(centerX, centerZ, size, y) {
 }
 
 function groundLonLat(center, size, bbox) {
-  const [minLon, minLat, maxLon, maxLat] = bbox;
-  const originLon = (minLon + maxLon) / 2;
-  const originLat = (minLat + maxLat) / 2;
-  const { mLon, mLat } = metersPerDegree(originLat);
   const half = size / 2;
-  const xWest = center.x - half;
-  const xEast = center.x + half;
-  const zNorth = center.z - half;
-  const zSouth = center.z + half;
-  const [lonWest, latNorth] = localToLonLat(xWest, zNorth, originLon, originLat, mLon, mLat);
-  const [lonEast, latSouth] = localToLonLat(xEast, zSouth, originLon, originLat, mLon, mLat);
-  return { lonWest, lonEast, latSouth, latNorth };
+  const northWest = mapLonLat(center.x - half, center.z - half, bbox);
+  const southEast = mapLonLat(center.x + half, center.z + half, bbox);
+  return {
+    lonWest: northWest.longitude,
+    lonEast: southEast.longitude,
+    latSouth: southEast.latitude,
+    latNorth: northWest.latitude,
+  };
 }
+
+function isMarkObject(object) {
+  let current = object;
+  while (current) {
+    if (current.userData?.isMark) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+function writeDegrees(element, value) {
+  element.textContent = value == null ? "—" : `${formatMapCoordinate(value)}°`;
+}
+
+function showMarkedPoint(point) {
+  writeDegrees(coordLatEl, point?.latitude);
+  writeDegrees(coordLonEl, point?.longitude);
+}
+
+function pickMapPoint(event) {
+  if (!mapBbox) return null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return null;
+  pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointerNdc, camera);
+  const hit = raycaster
+    .intersectObjects(scene.children, true)
+    .find((item) => !isMarkObject(item.object));
+  if (!hit) return null;
+  const { longitude, latitude } = mapLonLat(hit.point.x, hit.point.z, mapBbox);
+  return { longitude, latitude, x: hit.point.x, y: hit.point.y, z: hit.point.z };
+}
+
+function renderMarkList() {
+  markListEl.replaceChildren();
+  marks.forEach((mark, index) => {
+    const item = document.createElement("li");
+    item.textContent = `${index + 1}  ${formatMapCoordinate(mark.latitude)}°, ${formatMapCoordinate(mark.longitude)}°`;
+    markListEl.append(item);
+  });
+  clearButton.disabled = marks.length === 0;
+}
+
+function makePin(index) {
+  const group = new THREE.Group();
+  group.userData.isMark = true;
+
+  const markMaterial = new THREE.MeshBasicMaterial({ color: "#e25b2a", depthTest: false });
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1, 8), markMaterial);
+  pole.position.y = 0.5;
+  pole.renderOrder = 10;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), markMaterial);
+  head.position.y = 1.08;
+  head.renderOrder = 10;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#e25b2a";
+  context.beginPath();
+  context.arc(64, 64, 56, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = "#ffffff";
+  context.font = "700 64px sans-serif";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(String(index), 64, 70);
+  const texture = new THREE.CanvasTexture(canvas);
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
+  label.position.y = 1.55;
+  label.scale.set(0.85, 0.85, 1);
+  label.renderOrder = 11;
+
+  group.add(pole, head, label);
+  return group;
+}
+
+function placeMark(point) {
+  marks.push({ latitude: point.latitude, longitude: point.longitude });
+  const pin = makePin(marks.length);
+  pin.position.set(point.x, point.y, point.z);
+  markGroup.add(pin);
+  showMarkedPoint(point);
+  renderMarkList();
+}
+
+function clearMarks() {
+  marks.length = 0;
+  for (const pin of markGroup.children) {
+    pin.traverse((child) => {
+      child.geometry?.dispose();
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (const material of materials) {
+        material?.map?.dispose();
+        material?.dispose();
+      }
+    });
+  }
+  markGroup.clear();
+  showMarkedPoint(null);
+  renderMarkList();
+}
+
+function setMarkTool(armed) {
+  markArmed = armed;
+  markButton.setAttribute("aria-pressed", String(armed));
+  markButton.textContent = armed ? "Marking" : "Mark point";
+  controls.mouseButtons.LEFT = armed ? null : THREE.MOUSE.ROTATE;
+  renderer.domElement.classList.toggle("is-marking", armed);
+  coordHintEl.textContent = armed
+    ? "Click the city. The pin uses the map latitude and longitude."
+    : "Mark reads latitude and longitude from the district map.";
+}
+
+const pinAnchor = new THREE.Vector3();
+
+function scalePins() {
+  for (const pin of markGroup.children) {
+    const distance = camera.position.distanceTo(pin.getWorldPosition(pinAnchor));
+    pin.scale.setScalar(Math.max(distance * 0.045, 12));
+  }
+}
+
+markButton.addEventListener("click", () => {
+  if (markButton.disabled) return;
+  setMarkTool(!markArmed);
+});
+
+clearButton.addEventListener("click", () => {
+  if (clearButton.disabled) return;
+  clearMarks();
+});
+
+renderer.domElement.addEventListener("pointermove", (event) => {
+  const point = pickMapPoint(event);
+  if (!point) {
+    coordCursorEl.textContent = "Cursor —";
+    if (marks.length === 0) showMarkedPoint(null);
+    return;
+  }
+  coordCursorEl.textContent = `Cursor ${formatMapCoordinate(point.latitude)}°, ${formatMapCoordinate(point.longitude)}°`;
+  if (marks.length === 0) showMarkedPoint(point);
+});
+
+renderer.domElement.addEventListener("pointerleave", () => {
+  press = null;
+  coordCursorEl.textContent = "Cursor —";
+  if (marks.length === 0) showMarkedPoint(null);
+});
+
+renderer.domElement.addEventListener("pointerdown", (event) => {
+  if (!markArmed || event.button !== 0) return;
+  press = { x: event.clientX, y: event.clientY };
+});
+
+renderer.domElement.addEventListener("pointerup", (event) => {
+  if (!markArmed || event.button !== 0 || !press) return;
+  const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y);
+  press = null;
+  if (moved > 6) return;
+  const point = pickMapPoint(event);
+  if (point) placeMark(point);
+});
 
 async function applySatellite(ground, center, size, bbox) {
   try {
@@ -147,6 +327,10 @@ async function loadMeta() {
     if (typeof meta.tree_count === "number") {
       treesEl.textContent = meta.tree_count.toLocaleString("en-US");
     }
+    if (Array.isArray(meta.bbox) && meta.bbox.length === 4 && meta.bbox.every((value) => Number.isFinite(value))) {
+      mapBbox = meta.bbox;
+      markButton.disabled = false;
+    }
     return meta;
   } catch {
     return null;
@@ -186,5 +370,6 @@ loadMeta().then((meta) => loadModel(meta));
 
 renderer.setAnimationLoop(() => {
   controls.update();
+  scalePins();
   renderer.render(scene, camera);
 });

@@ -104,3 +104,104 @@ dd {
 #status.is-error {
   color: #8a3b2c;
 }
+
+#coord-panel {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  width: min(280px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 18px 18px 14px;
+  background: rgba(253, 251, 247, 0.88);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+}
+
+#coord-hint,
+#coord-cursor {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+#coord-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+#coord-stats div {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+#coord-stats dd {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.coord-actions {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.coord-actions button {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.coord-actions button[aria-pressed="true"] {
+  background: #e25b2a;
+  border-color: #e25b2a;
+  color: #fff;
+}
+
+.coord-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+#mark-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+#mark-list li {
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+#app canvas.is-marking {
+  cursor: crosshair;
+}
+
+@media (max-width: 720px) {
+  #coord-panel {
+    top: auto;
+    right: 20px;
+    bottom: 20px;
+    left: 20px;
+    width: auto;
+    max-height: 40vh;
+  }
+}

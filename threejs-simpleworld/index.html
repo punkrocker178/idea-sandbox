@@ -36,6 +36,26 @@
         Imagery © Esri, Maxar, Earthstar Geographics.
       </p>
     </aside>
+    <aside id="coord-panel">
+      <p class="eyebrow">Coordinates</p>
+      <p id="coord-hint">Mark reads latitude and longitude from the district map.</p>
+      <dl id="coord-stats">
+        <div>
+          <dt>Latitude</dt>
+          <dd id="coord-lat" aria-live="polite">—</dd>
+        </div>
+        <div>
+          <dt>Longitude</dt>
+          <dd id="coord-lon" aria-live="polite">—</dd>
+        </div>
+      </dl>
+      <p id="coord-cursor">Cursor —</p>
+      <div class="coord-actions">
+        <button type="button" id="mark-tool" aria-pressed="false" disabled>Mark point</button>
+        <button type="button" id="clear-marks" disabled>Clear</button>
+      </div>
+      <ol id="mark-list"></ol>
+    </aside>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
