@@ -20,6 +20,23 @@ export function localToLonLat(x, z, originLon, originLat, mLon, mLat) {
   return [originLon + x / mLon, originLat - z / mLat];
 }
 
+/**
+ * World metres on the district model to map longitude and latitude.
+ * The model origin is the centre of bbox [minLon, minLat, maxLon, maxLat].
+ */
+export function mapLonLat(x, z, bbox) {
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  const originLon = (minLon + maxLon) / 2;
+  const originLat = (minLat + maxLat) / 2;
+  const { mLon, mLat } = metersPerDegree(originLat);
+  const [longitude, latitude] = localToLonLat(x, z, originLon, originLat, mLon, mLat);
+  return { longitude, latitude };
+}
+
+export function formatMapCoordinate(value) {
+  return value.toFixed(6);
+}
+
 export function mercatorTile(lon, lat, zoom) {
   const n = 2 ** zoom;
   const latRad = (lat * Math.PI) / 180;
