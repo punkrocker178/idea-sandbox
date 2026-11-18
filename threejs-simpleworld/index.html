@@ -25,6 +25,10 @@
           <dt>Trees</dt>
           <dd id="stat-trees">—</dd>
         </div>
+        <div>
+          <dt>FPS</dt>
+          <dd id="stat-fps">—</dd>
+        </div>
       </dl>
       <p id="status">Loading the city…</p>
       <p class="credit">
@@ -38,7 +42,17 @@
     </aside>
     <aside id="coord-panel">
       <p class="eyebrow">Coordinates</p>
-      <p id="coord-hint">Press F to fly. Mark reads latitude and longitude from the district map.</p>
+      <p id="coord-hint">Use Fly or press F. Mark reads latitude and longitude from the district map.</p>
+      <div class="camera-controls">
+        <div class="coord-actions" role="group" aria-label="Camera">
+          <button type="button" id="mode-orbit" aria-pressed="true" disabled>Orbit</button>
+          <button type="button" id="mode-fly" aria-pressed="false" disabled>Fly</button>
+        </div>
+        <label class="fly-speed">
+          <span>Fly speed <span><output id="fly-speed-value" for="fly-speed">10</output>%</span></span>
+          <input id="fly-speed" type="range" min="2" max="100" step="1" value="10" aria-label="Fly speed" />
+        </label>
+      </div>
       <dl id="coord-stats">
         <div>
           <dt>Latitude</dt>

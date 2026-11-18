@@ -61,9 +61,13 @@ h1 {
 
 #stats {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 10px;
   margin: 0 0 12px;
+}
+
+#stats dd {
+  font-variant-numeric: tabular-nums;
 }
 
 #stats div {
@@ -145,10 +149,45 @@ dd {
   font-variant-numeric: tabular-nums;
 }
 
+.camera-controls {
+  margin-top: 12px;
+}
+
 .coord-actions {
   display: flex;
   gap: 8px;
   margin: 12px 0;
+}
+
+.camera-controls .coord-actions {
+  margin-top: 0;
+}
+
+.fly-speed {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.fly-speed span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.fly-speed output {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.fly-speed input {
+  width: 100%;
+  margin: 0;
+  accent-color: #e25b2a;
 }
 
 .coord-actions button {
@@ -193,6 +232,11 @@ dd {
 
 #app canvas.is-marking {
   cursor: crosshair;
+}
+
+body.is-flying,
+body.is-flying * {
+  cursor: none !important;
 }
 
 @media (max-width: 720px) {

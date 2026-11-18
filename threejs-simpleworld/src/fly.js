@@ -5,6 +5,17 @@ const DOWN_KEYS = ["KeyE", "ControlLeft", "ControlRight"];
 const SHIFT_KEYS = ["ShiftLeft", "ShiftRight"];
 const PITCH_LIMIT = (89 * Math.PI) / 180;
 const LOOK_SENSITIVITY = 0.002;
+const MIN_SPEED_SCALE = 0.02;
+const MAX_SPEED_SCALE = 1;
+
+/** Fraction of the district span travelled each second, before Shift. */
+export const DEFAULT_SPEED_SCALE = 0.1;
+
+export function clampSpeedScale(value) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return DEFAULT_SPEED_SCALE;
+  return Math.min(MAX_SPEED_SCALE, Math.max(MIN_SPEED_SCALE, next));
+}
 
 function hasKey(keys, codes) {
   return codes.some((code) => keys.has(code));
@@ -42,6 +53,7 @@ export function createFlyControls(domElement) {
   let pitch = 0;
   let active = false;
   let span = 1;
+  let speedScale = DEFAULT_SPEED_SCALE;
 
   function onKeyDown(event) {
     keys.add(event.code);
@@ -54,7 +66,9 @@ export function createFlyControls(domElement) {
   }
 
   function onMouseMove(event) {
-    if (!active || document.pointerLockElement !== domElement) return;
+    if (!active) return;
+    const lockedHere = document.pointerLockElement === domElement;
+    if (!lockedHere && event.target !== domElement) return;
     yaw -= event.movementX * LOOK_SENSITIVITY;
     pitch -= event.movementY * LOOK_SENSITIVITY;
     pitch = Math.min(PITCH_LIMIT, Math.max(-PITCH_LIMIT, pitch));
@@ -75,6 +89,9 @@ export function createFlyControls(domElement) {
     },
     setSpan(value) {
       span = Math.max(value, 1);
+    },
+    setSpeedScale(value) {
+      speedScale = clampSpeedScale(value);
     },
     engage(camera) {
       camera.updateMatrixWorld();
@@ -99,7 +116,7 @@ export function createFlyControls(domElement) {
       right.set(-direction.z, 0, direction.x);
       if (right.lengthSq() > 1e-8) right.normalize();
       else right.set(1, 0, 0);
-      const velocity = flyVelocity(keys, direction, right, span);
+      const velocity = flyVelocity(keys, direction, right, span * speedScale);
       camera.position.x += velocity.x * delta;
       camera.position.y += velocity.y * delta;
       camera.position.z += velocity.z * delta;

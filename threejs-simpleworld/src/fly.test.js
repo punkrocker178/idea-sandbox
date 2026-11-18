@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { flyVelocity } from "./fly.js";
+import { clampSpeedScale, DEFAULT_SPEED_SCALE, flyVelocity } from "./fly.js";
 
 const FORWARD = { x: 0, y: 0, z: -1 };
 const RIGHT = { x: 1, y: 0, z: 0 };
@@ -46,6 +46,15 @@ test("a camera pitched 45 degrees upward gives W equal -Z and +Y components", ()
   assert.ok(Math.abs(velocity.y - 100 * Math.SQRT1_2) < 1e-9);
   assert.ok(Math.abs(velocity.z + 100 * Math.SQRT1_2) < 1e-9);
   assert.ok(Math.abs(velocity.y + velocity.z) < 1e-9);
+});
+
+test("default fly speed is a tenth of the span and the slider stays in range", () => {
+  assert.equal(DEFAULT_SPEED_SCALE, 0.1);
+  assert.equal(clampSpeedScale(0.1), 0.1);
+  assert.equal(clampSpeedScale(5), 1);
+  assert.equal(clampSpeedScale(0), 0.02);
+  assert.equal(clampSpeedScale(-3), 0.02);
+  assert.equal(clampSpeedScale("nope"), DEFAULT_SPEED_SCALE);
 });
 
 test("speed is metres per second and Shift multiplies it by 4", () => {
