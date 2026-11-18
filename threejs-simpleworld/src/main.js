@@ -2,8 +2,11 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { createFlyControls } from "./fly.js";
+import { applyStreetColor, createBasemapCanvas, ROAD_COLOR } from "./basemap.js";
 import { formatMapCoordinate, mapLonLat, stitchSatellite } from "./imagery.js";
 
+const READY_STATUS =
+  "Dark gray streets, blue water, and green trees follow OpenStreetMap. Switch to Map for residential blocks, grass, parks, and sidewalks. Houses it does not map come from the Global Building Atlas.";
 const IDLE_HINT = "Use Fly or press F. Mark reads latitude and longitude from the district map.";
 const MARK_HINT = "Click the city. The pin uses the map latitude and longitude.";
 const FLY_HINT = "Fly: WASD move, mouse looks, Q/E or Space/Ctrl height, Shift faster. Esc returns to orbit.";
@@ -29,6 +32,8 @@ const modeFlyButton = document.querySelector("#mode-fly");
 const flySpeedInput = document.querySelector("#fly-speed");
 const flySpeedValue = document.querySelector("#fly-speed-value");
 const markListEl = document.querySelector("#mark-list");
+const groundSatelliteButton = document.querySelector("#ground-satellite");
+const groundMapButton = document.querySelector("#ground-map");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#f5f2eb");
@@ -69,6 +74,9 @@ let fpsWindow = 0;
 let fpsFrames = 0;
 let awaitingLock = false;
 let groundMesh = null;
+let groundMode = "satellite";
+let satelliteTexture = null;
+let mapTexture = null;
 
 function resize() {
   const width = app.clientWidth || window.innerWidth;
@@ -94,7 +102,9 @@ function frameObject(object, meta) {
   groundMesh.name = "ground";
   scene.add(groundMesh);
   if (meta?.bbox) {
-    applySatellite(groundMesh, center, groundSize, meta.bbox);
+    const bounds = groundLonLat(center, groundSize, meta.bbox);
+    applySatellite(bounds);
+    loadBasemap(bounds);
   }
 
   const distance = span * 0.72;
@@ -414,27 +424,79 @@ renderer.domElement.addEventListener("pointerup", (event) => {
   if (point) placeMark(point);
 });
 
-async function applySatellite(ground, center, size, bbox) {
+function textureFromCanvas(canvas) {
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return texture;
+}
+
+function showGround() {
+  if (!groundMesh) return;
+  const texture = groundMode === "map" ? mapTexture : satelliteTexture;
+  groundMesh.material.map = texture || null;
+  groundMesh.material.color.set(texture ? "#ffffff" : "#e6dfd3");
+  groundMesh.material.needsUpdate = true;
+  const satellite = groundMode === "satellite";
+  groundSatelliteButton.setAttribute("aria-pressed", String(satellite));
+  groundMapButton.setAttribute("aria-pressed", String(!satellite));
+}
+
+function setGroundMode(mode) {
+  groundMode = mode;
+  showGround();
+}
+
+function recolorStreets(root) {
+  const materials = [];
+  root.traverse((child) => {
+    if (!child.isMesh || !child.material) return;
+    const list = Array.isArray(child.material) ? child.material : [child.material];
+    materials.push(...list);
+  });
+  applyStreetColor(materials, ROAD_COLOR);
+}
+
+async function applySatellite(bounds) {
   try {
-    const canvas = await stitchSatellite(groundLonLat(center, size, bbox), {
+    const canvas = await stitchSatellite(bounds, {
       onProgress(done, total) {
         const percent = Math.round((100 * done) / total);
         setStatus(`Loading satellite ${percent}%`);
       },
     });
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
-    ground.material.color.set("#ffffff");
-    ground.material.map = texture;
-    ground.material.needsUpdate = true;
-    setStatus(
-      "Brown streets, blue water, and green trees follow OpenStreetMap. Houses it does not map come from the Global Building Atlas.",
-    );
+    satelliteTexture = textureFromCanvas(canvas);
+    showGround();
+    setStatus(READY_STATUS);
   } catch {
-        setStatus("Satellite tiles failed. Streets are still drawn. Drag to orbit.");
+    if (groundMode === "satellite") {
+      setStatus("Satellite tiles failed. Streets are still drawn. Drag to orbit.", true);
+    }
   }
 }
+
+async function loadBasemap(bounds) {
+  try {
+    const response = await fetch("/models/district1-map.json");
+    if (!response.ok) throw new Error(String(response.status));
+    mapTexture = textureFromCanvas(createBasemapCanvas(await response.json(), bounds));
+    showGround();
+  } catch {
+    if (groundMode === "map") {
+      setStatus("Map data failed. Satellite is still available.", true);
+    }
+  }
+}
+
+groundSatelliteButton.addEventListener("click", () => {
+  setGroundMode("satellite");
+  groundSatelliteButton.blur();
+});
+
+groundMapButton.addEventListener("click", () => {
+  setGroundMode("map");
+  groundMapButton.blur();
+});
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -470,13 +532,10 @@ function loadModel(meta) {
   loader.load(
     MODEL_URL,
     (gltf) => {
+      recolorStreets(gltf.scene);
       scene.add(gltf.scene);
       frameObject(gltf.scene, meta);
-      if (!meta?.bbox) {
-        setStatus(
-          "Brown streets, blue water, and green trees follow OpenStreetMap. Houses it does not map come from the Global Building Atlas.",
-        );
-      }
+      if (!meta?.bbox) setStatus(READY_STATUS);
     },
     (event) => {
       if (!event.total) return;

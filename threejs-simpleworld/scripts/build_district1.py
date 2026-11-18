@@ -73,7 +73,7 @@ STREET_TYPES = frozenset(
         "road",
     }
 )
-STREET_COLOR = "#5c4636"
+STREET_COLOR = "#3a3a3a"
 STREET_Y_M = 0.12
 BRIDGE_Y_M = 0.55
 MAX_STREET_WIDTH_M = 30.0
@@ -635,7 +635,7 @@ def write_outputs(city: o3.CityModel3D, rings) -> None:
                 "kept. Global Building Atlas footprints are added where they "
                 "are not already an OpenStreetMap building, water surface, "
                 "street, or pedestrian area. "
-                "Streets are ribbons from OSM highways. Blue surfaces are OSM "
+                "Streets are dark gray ribbons from OSM highways. Blue surfaces are OSM "
                 "water polygons clipped to the District 1 boundary, including "
                 "the Saigon River, canals, lakes, and ponds. Green trees are "
                 "OSM natural=tree nodes."

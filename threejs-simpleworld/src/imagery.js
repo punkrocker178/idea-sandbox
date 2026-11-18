@@ -47,7 +47,7 @@ export function mercatorTile(lon, lat, zoom) {
   return { x, y };
 }
 
-function mercatorPixel(lon, lat, zoom) {
+export function mercatorPixel(lon, lat, zoom) {
   const scale = 256 * 2 ** zoom;
   const latRad = (lat * Math.PI) / 180;
   return {
