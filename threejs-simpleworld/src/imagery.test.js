@@ -2,11 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DETAIL_TILE_LIMIT,
+  DETAIL_ZOOM,
+  detailBounds,
+  detailRadiusMeters,
   formatMapCoordinate,
+  imageryTileUrl,
   localToLonLat,
+  lonLatToLocal,
   mapLonLat,
   mercatorTile,
   metersPerDegree,
+  selectDetailTiles,
+  tileBounds,
+  tilesCovering,
 } from "./imagery.js";
 
 const BBOX = [106.6816889, 10.753519, 106.7151954, 10.7969493];
@@ -44,6 +53,87 @@ test("map coordinates display as six decimal degrees", () => {
   const point = mapLonLat(0, 0, BBOX);
   assert.equal(formatMapCoordinate(point.latitude), "10.775234");
   assert.equal(formatMapCoordinate(point.longitude), "106.698442");
+});
+
+test("zoom 19 is the sharp Esri tile for the district centre", () => {
+  assert.equal(DETAIL_ZOOM, 19);
+  assert.deepEqual(mercatorTile(ORIGIN_LON, ORIGIN_LAT, DETAIL_ZOOM), {
+    x: 417534,
+    y: 246358,
+  });
+});
+
+test("Esri requests are zoom, row, then column", () => {
+  assert.equal(
+    imageryTileUrl(19, 417534, 246358),
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/19/246358/417534",
+  );
+});
+
+test("a tile's bounds contain the point that selected it", () => {
+  const { x, y } = mercatorTile(ORIGIN_LON, ORIGIN_LAT, 19);
+  const bounds = tileBounds(x, y, 19);
+  assert.ok(ORIGIN_LON >= bounds.lonWest && ORIGIN_LON < bounds.lonEast);
+  assert.ok(ORIGIN_LAT <= bounds.latNorth && ORIGIN_LAT > bounds.latSouth);
+  const west = tileBounds(x - 1, y, 19);
+  assert.ok(ORIGIN_LON >= west.lonEast);
+});
+
+test("local metres invert back to longitude and latitude", () => {
+  const { mLon, mLat } = metersPerDegree(ORIGIN_LAT);
+  const [x, z] = lonLatToLocal(
+    ORIGIN_LON + 0.01,
+    ORIGIN_LAT - 0.02,
+    ORIGIN_LON,
+    ORIGIN_LAT,
+    mLon,
+    mLat,
+  );
+  const [lon, lat] = localToLonLat(x, z, ORIGIN_LON, ORIGIN_LAT, mLon, mLat);
+  assert.ok(Math.abs(lon - (ORIGIN_LON + 0.01)) < 1e-12);
+  assert.ok(Math.abs(lat - (ORIGIN_LAT - 0.02)) < 1e-12);
+});
+
+test("detail tiles cover a city block around the camera", () => {
+  const { mLon, mLat } = metersPerDegree(ORIGIN_LAT);
+  const bounds = detailBounds(ORIGIN_LON, ORIGIN_LAT, 100, mLon, mLat);
+  const tiles = selectDetailTiles(bounds, 19, ORIGIN_LON, ORIGIN_LAT, DETAIL_TILE_LIMIT);
+  assert.ok(tiles.length >= 1 && tiles.length <= 16);
+  const center = mercatorTile(ORIGIN_LON, ORIGIN_LAT, 19);
+  assert.ok(tiles.some((tile) => tile.x === center.x && tile.y === center.y && tile.zoom === 19));
+  for (const tile of tiles) {
+    const tileBox = tileBounds(tile.x, tile.y, tile.zoom);
+    const overlaps =
+      tileBox.lonEast > bounds.lonWest &&
+      tileBox.lonWest < bounds.lonEast &&
+      tileBox.latNorth > bounds.latSouth &&
+      tileBox.latSouth < bounds.latNorth;
+    assert.equal(overlaps, true);
+  }
+});
+
+test("a wide view keeps only the tiles nearest the camera", () => {
+  const { mLon, mLat } = metersPerDegree(ORIGIN_LAT);
+  const bounds = detailBounds(ORIGIN_LON, ORIGIN_LAT, 5000, mLon, mLat);
+  const tiles = selectDetailTiles(bounds, 19, ORIGIN_LON, ORIGIN_LAT, 4);
+  assert.equal(tiles.length, 4);
+  const center = mercatorTile(ORIGIN_LON, ORIGIN_LAT, 19);
+  assert.ok(tiles.some((tile) => tile.x === center.x && tile.y === center.y));
+  const dist = (tile) => (tile.x - center.x) ** 2 + (tile.y - center.y) ** 2;
+  const kept = Math.max(...tiles.map(dist));
+  const dropped = tilesCovering(bounds, 19).filter(
+    (tile) => !tiles.some((keptTile) => keptTile.x === tile.x && keptTile.y === tile.y),
+  );
+  assert.ok(dropped.length > 0);
+  for (const tile of dropped) assert.ok(dist(tile) >= kept);
+});
+
+test("sharper imagery is requested only from a close camera", () => {
+  assert.equal(detailRadiusMeters(2000), 0);
+  assert.equal(detailRadiusMeters(1600.1), 0);
+  assert.equal(detailRadiusMeters(100), 220);
+  assert.equal(detailRadiusMeters(400), 360);
+  assert.equal(detailRadiusMeters(1500), 700);
 });
 
 test("east and north offsets follow the local metre scale", () => {

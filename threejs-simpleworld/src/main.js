@@ -2,7 +2,21 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { createFlyControls } from "./fly.js";
-import { formatMapCoordinate, mapLonLat, stitchSatellite } from "./imagery.js";
+import {
+  DETAIL_TILE_LIMIT,
+  DETAIL_ZOOM,
+  detailBounds,
+  detailRadiusMeters,
+  formatMapCoordinate,
+  loadImageryTile,
+  lonLatToLocal,
+  mapLonLat,
+  mercatorTile,
+  metersPerDegree,
+  selectDetailTiles,
+  stitchSatellite,
+  tileBounds,
+} from "./imagery.js";
 
 const IDLE_HINT = "Use Fly or press F. Mark reads latitude and longitude from the district map.";
 const MARK_HINT = "Click the city. The pin uses the map latitude and longitude.";
@@ -69,6 +83,13 @@ let fpsWindow = 0;
 let fpsFrames = 0;
 let awaitingLock = false;
 let groundMesh = null;
+let detailFrame = null;
+let detailSignature = "";
+const detailGroup = new THREE.Group();
+detailGroup.name = "satellite-detail";
+scene.add(detailGroup);
+const detailByKey = new Map();
+const focusAnchor = new THREE.Vector3();
 
 function resize() {
   const width = app.clientWidth || window.innerWidth;
@@ -94,6 +115,12 @@ function frameObject(object, meta) {
   groundMesh.name = "ground";
   scene.add(groundMesh);
   if (meta?.bbox) {
+    const [minLon, minLat, maxLon, maxLat] = meta.bbox;
+    detailFrame = {
+      originLon: (minLon + maxLon) / 2,
+      originLat: (minLat + maxLat) / 2,
+      ...metersPerDegree((minLat + maxLat) / 2),
+    };
     applySatellite(groundMesh, center, groundSize, meta.bbox);
   }
 
@@ -414,6 +441,124 @@ renderer.domElement.addEventListener("pointerup", (event) => {
   if (point) placeMark(point);
 });
 
+function tileKey(tile) {
+  return `${tile.zoom}/${tile.y}/${tile.x}`;
+}
+
+function groundElevation() {
+  return groundMesh.geometry.getAttribute("position").getY(0);
+}
+
+function disposeDetailEntry(entry) {
+  entry.cancelled = true;
+  if (!entry.mesh) return;
+  detailGroup.remove(entry.mesh);
+  entry.mesh.geometry.dispose();
+  entry.mesh.material.map?.dispose();
+  entry.mesh.material.dispose();
+}
+
+function clearDetailTiles() {
+  for (const entry of detailByKey.values()) disposeDetailEntry(entry);
+  detailByKey.clear();
+}
+
+function detailQuad(tile, y) {
+  const bounds = tileBounds(tile.x, tile.y, tile.zoom);
+  const { originLon, originLat, mLon, mLat } = detailFrame;
+  const [xWest, zNorth] = lonLatToLocal(bounds.lonWest, bounds.latNorth, originLon, originLat, mLon, mLat);
+  const [xEast, zSouth] = lonLatToLocal(bounds.lonEast, bounds.latSouth, originLon, originLat, mLon, mLat);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+      [xWest, y, zSouth, xEast, y, zSouth, xEast, y, zNorth, xWest, y, zNorth],
+      3,
+    ),
+  );
+  geometry.setAttribute(
+    "uv",
+    new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2),
+  );
+  geometry.setIndex([0, 1, 2, 0, 2, 3]);
+  return geometry;
+}
+
+function showDetailTiles(tiles) {
+  const wanted = new Set(tiles.map(tileKey));
+  for (const [key, entry] of detailByKey) {
+    if (wanted.has(key)) continue;
+    disposeDetailEntry(entry);
+    detailByKey.delete(key);
+  }
+  const y = groundElevation() + 0.04;
+  for (const tile of tiles) {
+    const key = tileKey(tile);
+    if (detailByKey.has(key)) continue;
+    const entry = { cancelled: false, mesh: null };
+    detailByKey.set(key, entry);
+    loadImageryTile(tile.zoom, tile.x, tile.y)
+      .then((image) => {
+        if (entry.cancelled || detailByKey.get(key) !== entry) return;
+        const texture = new THREE.Texture(image);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        texture.needsUpdate = true;
+        const mesh = new THREE.Mesh(
+          detailQuad(tile, y),
+          new THREE.MeshBasicMaterial({
+            map: texture,
+            polygonOffset: true,
+            polygonOffsetFactor: -2,
+            polygonOffsetUnits: -2,
+          }),
+        );
+        mesh.name = "satellite-detail-tile";
+        mesh.renderOrder = 1;
+        entry.mesh = mesh;
+        detailGroup.add(mesh);
+      })
+      .catch(() => {
+        if (detailByKey.get(key) === entry) detailByKey.delete(key);
+      });
+  }
+}
+
+function refreshDetail() {
+  if (!detailFrame || !groundMesh || !mapBbox) return;
+  const hit = sampleMap(0, 0);
+  const lookDistance = hit ? camera.position.distanceTo(focusAnchor.set(hit.x, hit.y, hit.z)) : Infinity;
+  const height = camera.position.y - groundElevation();
+  const lookRadius = detailRadiusMeters(lookDistance);
+  const heightRadius = detailRadiusMeters(height);
+  let focusX;
+  let focusZ;
+  let radius;
+  if (lookRadius > 0) {
+    focusX = hit.x;
+    focusZ = hit.z;
+    radius = lookRadius;
+  } else if (heightRadius > 0) {
+    focusX = camera.position.x;
+    focusZ = camera.position.z;
+    radius = heightRadius;
+  } else {
+    if (detailSignature !== "") {
+      detailSignature = "";
+      clearDetailTiles();
+    }
+    return;
+  }
+  const { longitude, latitude } = mapLonLat(focusX, focusZ, mapBbox);
+  const centerTile = mercatorTile(longitude, latitude, DETAIL_ZOOM);
+  const signature = `${centerTile.x}:${centerTile.y}:${Math.round(radius / 40)}`;
+  if (signature === detailSignature) return;
+  detailSignature = signature;
+  const { mLon, mLat } = detailFrame;
+  const bounds = detailBounds(longitude, latitude, radius, mLon, mLat);
+  showDetailTiles(selectDetailTiles(bounds, DETAIL_ZOOM, longitude, latitude, DETAIL_TILE_LIMIT));
+}
+
 async function applySatellite(ground, center, size, bbox) {
   try {
     const canvas = await stitchSatellite(groundLonLat(center, size, bbox), {
@@ -516,5 +661,6 @@ renderer.setAnimationLoop(() => {
     controls.update();
   }
   scalePins();
+  refreshDetail();
   renderer.render(scene, camera);
 });
