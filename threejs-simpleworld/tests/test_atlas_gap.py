@@ -10,6 +10,7 @@ from scripts.atlas_gap import (
     MIN_FOOTPRINT_AREA_M2,
     add_missing_atlas_buildings,
     atlas_height_m,
+    corridor_rings,
     missing_buildings,
 )
 from scripts.build_district1 import DISTRICT1_BBOX, city_from_overpass, export_district_glb
@@ -74,6 +75,38 @@ def test_atlas_houses_are_added_only_where_osm_has_none():
     assert kept_area < full_area * 0.9
     assert kept_area >= MIN_FOOTPRINT_AREA_M2
     assert max(lon for lon, _lat in kept_block.footprint) <= BBOX[2]
+
+
+def test_a_street_corridor_suppresses_an_atlas_footprint():
+    # A 20 m boulevard through the middle of the footprint.
+    corridor = corridor_rings(
+        [([(106.7010, 10.77215), (106.7040, 10.77215)], 20.0)]
+    )
+    on_the_road = _rect(106.7020, 10.7720, 106.7024, 10.7723)
+    beside = _rect(106.7020, 10.7730, 106.7024, 10.7733)
+    meshes = missing_buildings(
+        [("on-road", 12.0, on_the_road), ("beside", 9.0, beside)],
+        corridor,
+        BBOX,
+    )
+    assert [mesh.osm_id for mesh in meshes] == ["gba:beside:0"]
+
+
+def test_a_shallow_overlap_is_cut_out_of_the_atlas_footprint():
+    corridor = corridor_rings(
+        [([(106.7010, 10.77200), (106.7040, 10.77200)], 16.0)]
+    )
+    spilling = _rect(106.7020, 10.77200, 106.7024, 10.77240)
+    meshes = missing_buildings([("spill", 8.0, spilling)], corridor, BBOX)
+    assert len(meshes) == 1
+    kept = _area_m2(meshes[0], 10.772)
+    full = _area_m2_polygon(spilling, 10.772)
+    assert MIN_FOOTPRINT_AREA_M2 <= kept < full * 0.85
+
+
+def _area_m2_polygon(polygon, latitude):
+    metres_lon = 111_320.0 * math.cos(math.radians(latitude))
+    return scale(polygon, xfact=metres_lon, yfact=111_320.0, origin=(0.0, 0.0)).area
 
 
 def test_water_suppresses_an_atlas_footprint():

@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "model": "python3 scripts/build_district1.py",
-    "test": "node --test src/imagery.test.js"
+    "test": "node --test src/imagery.test.js src/fly.test.js"
   },
   "dependencies": {
     "three": "^0.170.0"

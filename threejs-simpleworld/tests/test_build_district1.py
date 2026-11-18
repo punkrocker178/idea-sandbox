@@ -3,13 +3,19 @@
 import json
 import struct
 
+from shapely.geometry import box
+
 from scripts.build_district1 import (
     DISTRICT1_BBOX,
     city_from_overpass,
+    district_overpass_query,
     export_district_glb,
     osm_water_rings,
+    pedestrian_area_rings,
     saigon_river_rings,
+    street_corridor_rings,
 )
+from scripts.atlas_gap import add_missing_atlas_buildings
 
 
 def test_district1_bbox_contains_ben_thanh_market():
@@ -271,3 +277,64 @@ def test_osm_trees_are_green_and_stand_above_the_ground(tmp_path):
     assert min_y < 0.5
     assert max_y > 5
     assert city.tree_count == 1
+
+
+def test_overpass_query_includes_pedestrian_street_areas():
+    assert 'relation["highway"="pedestrian"]' in district_overpass_query()
+
+
+def test_footpaths_do_not_block_atlas_buildings():
+    origin_lon = (DISTRICT1_BBOX[0] + DISTRICT1_BBOX[2]) / 2
+    origin_lat = (DISTRICT1_BBOX[1] + DISTRICT1_BBOX[3]) / 2
+    footway = _open_way(
+        70,
+        [(origin_lon, origin_lat), (origin_lon + 0.001, origin_lat)],
+        {"highway": "footway"},
+    )
+    city = city_from_overpass({"elements": footway})
+    assert street_corridor_rings(city) == []
+
+
+def test_walking_street_and_carriageway_block_atlas_buildings():
+    # Nguyễn Huệ-style plaza, plus a Hàm Nghi-style primary road south of it.
+    plaza = [
+        (106.7030, 10.7730),
+        (106.7040, 10.7730),
+        (106.7040, 10.7740),
+        (106.7030, 10.7740),
+        (106.7030, 10.7730),
+    ]
+    elements = []
+    for index, (lon, lat) in enumerate(plaza, start=1):
+        elements.append({"type": "node", "id": index, "lon": lon, "lat": lat})
+    elements.append({"type": "way", "id": 10, "nodes": [1, 2, 3, 4, 1], "tags": {}})
+    elements.append(
+        {
+            "type": "relation",
+            "id": 20,
+            "members": [{"type": "way", "ref": 10, "role": "outer"}],
+            "tags": {"type": "multipolygon", "highway": "pedestrian", "name": "Đường đi bộ Nguyễn Huệ"},
+        }
+    )
+    elements.extend(
+        _open_way(
+            30,
+            [(106.7010, 10.7710), (106.7050, 10.7710)],
+            {"highway": "primary", "name": "Hàm Nghi", "lanes": "3"},
+        )
+    )
+    payload = {"elements": elements}
+    city = city_from_overpass(payload)
+    blockers = pedestrian_area_rings(payload) + street_corridor_rings(city)
+
+    on_plaza = box(106.7034, 10.7734, 106.7036, 10.7736)
+    on_road = box(106.7029, 10.77098, 106.7031, 10.77102)
+    house = box(106.7034, 10.7755, 106.7036, 10.7757)
+    added = add_missing_atlas_buildings(
+        city,
+        [("plaza", 6.0, on_plaza), ("road", 20.0, on_road), ("house", 9.0, house)],
+        blockers,
+    )
+
+    assert added == 1
+    assert city.buildings[-1].osm_id == "gba:house:0"

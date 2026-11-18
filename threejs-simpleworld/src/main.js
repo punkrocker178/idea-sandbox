@@ -1,7 +1,13 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { localToLonLat, metersPerDegree, stitchSatellite } from "./imagery.js";
+import { createFlyControls } from "./fly.js";
+import { formatMapCoordinate, mapLonLat, stitchSatellite } from "./imagery.js";
+
+const IDLE_HINT = "Use Fly or press F. Mark reads latitude and longitude from the district map.";
+const MARK_HINT = "Click the city. The pin uses the map latitude and longitude.";
+const FLY_HINT = "Fly: WASD move, mouse looks, Q/E or Space/Ctrl height, Shift faster. Esc returns to orbit.";
+const LOCK_HINT = "Pointer lock was blocked, so look stops at the window edge.";
 
 const MODEL_URL = "/models/district1.glb";
 const META_URL = "/models/district1.json";
@@ -11,6 +17,18 @@ const statusEl = document.querySelector("#status");
 const buildingsEl = document.querySelector("#stat-buildings");
 const streetsEl = document.querySelector("#stat-streets");
 const treesEl = document.querySelector("#stat-trees");
+const fpsEl = document.querySelector("#stat-fps");
+const coordLatEl = document.querySelector("#coord-lat");
+const coordLonEl = document.querySelector("#coord-lon");
+const coordCursorEl = document.querySelector("#coord-cursor");
+const coordHintEl = document.querySelector("#coord-hint");
+const markButton = document.querySelector("#mark-tool");
+const clearButton = document.querySelector("#clear-marks");
+const modeOrbitButton = document.querySelector("#mode-orbit");
+const modeFlyButton = document.querySelector("#mode-fly");
+const flySpeedInput = document.querySelector("#fly-speed");
+const flySpeedValue = document.querySelector("#fly-speed-value");
+const markListEl = document.querySelector("#mark-list");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#f5f2eb");
@@ -31,6 +49,27 @@ controls.enableDamping = true;
 controls.maxPolarAngle = Math.PI / 2 - 0.05;
 controls.target.set(0, 0, 0);
 
+const raycaster = new THREE.Raycaster();
+const pointerNdc = new THREE.Vector2();
+const markGroup = new THREE.Group();
+markGroup.name = "marks";
+scene.add(markGroup);
+
+const fly = createFlyControls(renderer.domElement);
+const clock = new THREE.Clock();
+const lookDirection = new THREE.Vector3();
+
+let mapBbox = null;
+let markArmed = false;
+let flying = false;
+let districtSpan = 0;
+const marks = [];
+let press = null;
+let fpsWindow = 0;
+let fpsFrames = 0;
+let awaitingLock = false;
+let groundMesh = null;
+
 function resize() {
   const width = app.clientWidth || window.innerWidth;
   const height = app.clientHeight || window.innerHeight;
@@ -44,13 +83,18 @@ function frameObject(object, meta) {
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const span = Math.max(size.x, size.y, size.z, 1);
+  districtSpan = span;
+  fly.setSpan(span);
+  applyFlySpeed();
+  syncCameraMode();
 
   const groundSize = Math.max(size.x, size.z) * 1.35;
   const groundY = box.min.y - 0.2;
-  const ground = satelliteGround(center.x, center.z, groundSize, groundY);
-  scene.add(ground);
+  groundMesh = satelliteGround(center.x, center.z, groundSize, groundY);
+  groundMesh.name = "ground";
+  scene.add(groundMesh);
   if (meta?.bbox) {
-    applySatellite(ground, center, groundSize, meta.bbox);
+    applySatellite(groundMesh, center, groundSize, meta.bbox);
   }
 
   const distance = span * 0.72;
@@ -92,19 +136,283 @@ function satelliteGround(centerX, centerZ, size, y) {
 }
 
 function groundLonLat(center, size, bbox) {
-  const [minLon, minLat, maxLon, maxLat] = bbox;
-  const originLon = (minLon + maxLon) / 2;
-  const originLat = (minLat + maxLat) / 2;
-  const { mLon, mLat } = metersPerDegree(originLat);
   const half = size / 2;
-  const xWest = center.x - half;
-  const xEast = center.x + half;
-  const zNorth = center.z - half;
-  const zSouth = center.z + half;
-  const [lonWest, latNorth] = localToLonLat(xWest, zNorth, originLon, originLat, mLon, mLat);
-  const [lonEast, latSouth] = localToLonLat(xEast, zSouth, originLon, originLat, mLon, mLat);
-  return { lonWest, lonEast, latSouth, latNorth };
+  const northWest = mapLonLat(center.x - half, center.z - half, bbox);
+  const southEast = mapLonLat(center.x + half, center.z + half, bbox);
+  return {
+    lonWest: northWest.longitude,
+    lonEast: southEast.longitude,
+    latSouth: southEast.latitude,
+    latNorth: northWest.latitude,
+  };
 }
+
+function writeDegrees(element, value) {
+  element.textContent = value == null ? "—" : `${formatMapCoordinate(value)}°`;
+}
+
+function showMarkedPoint(point) {
+  writeDegrees(coordLatEl, point?.latitude);
+  writeDegrees(coordLonEl, point?.longitude);
+}
+
+function sampleMap(ndcX, ndcY) {
+  if (!mapBbox || !groundMesh) return null;
+  pointerNdc.set(ndcX, ndcY);
+  raycaster.setFromCamera(pointerNdc, camera);
+  const hit = raycaster.intersectObject(groundMesh, false)[0];
+  if (!hit) return null;
+  const { longitude, latitude } = mapLonLat(hit.point.x, hit.point.z, mapBbox);
+  return { longitude, latitude, x: hit.point.x, y: hit.point.y, z: hit.point.z };
+}
+
+function pickMapPoint(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return null;
+  const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  return sampleMap(ndcX, ndcY);
+}
+
+function renderMarkList() {
+  markListEl.replaceChildren();
+  marks.forEach((mark, index) => {
+    const item = document.createElement("li");
+    item.textContent = `${index + 1}  ${formatMapCoordinate(mark.latitude)}°, ${formatMapCoordinate(mark.longitude)}°`;
+    markListEl.append(item);
+  });
+  clearButton.disabled = marks.length === 0;
+}
+
+function makePin(index) {
+  const group = new THREE.Group();
+  group.userData.isMark = true;
+
+  const markMaterial = new THREE.MeshBasicMaterial({ color: "#e25b2a", depthTest: false });
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1, 8), markMaterial);
+  pole.position.y = 0.5;
+  pole.renderOrder = 10;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), markMaterial);
+  head.position.y = 1.08;
+  head.renderOrder = 10;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#e25b2a";
+  context.beginPath();
+  context.arc(64, 64, 56, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = "#ffffff";
+  context.font = "700 64px sans-serif";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(String(index), 64, 70);
+  const texture = new THREE.CanvasTexture(canvas);
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
+  label.position.y = 1.55;
+  label.scale.set(0.85, 0.85, 1);
+  label.renderOrder = 11;
+
+  group.add(pole, head, label);
+  return group;
+}
+
+function placeMark(point) {
+  marks.push({ latitude: point.latitude, longitude: point.longitude });
+  const pin = makePin(marks.length);
+  pin.position.set(point.x, point.y, point.z);
+  markGroup.add(pin);
+  showMarkedPoint(point);
+  renderMarkList();
+}
+
+function clearMarks() {
+  marks.length = 0;
+  for (const pin of markGroup.children) {
+    pin.traverse((child) => {
+      child.geometry?.dispose();
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (const material of materials) {
+        material?.map?.dispose();
+        material?.dispose();
+      }
+    });
+  }
+  markGroup.clear();
+  showMarkedPoint(null);
+  renderMarkList();
+}
+
+function showHint(message) {
+  coordHintEl.textContent = message;
+}
+
+function setMarkTool(armed) {
+  markArmed = armed;
+  markButton.setAttribute("aria-pressed", String(armed));
+  markButton.textContent = armed ? "Marking" : "Mark point";
+  controls.mouseButtons.LEFT = armed ? null : THREE.MOUSE.ROTATE;
+  renderer.domElement.classList.toggle("is-marking", armed);
+  if (!flying) showHint(armed ? MARK_HINT : IDLE_HINT);
+}
+
+function applyFlySpeed() {
+  const percent = Number(flySpeedInput.value);
+  fly.setSpeedScale(percent / 100);
+  flySpeedValue.textContent = String(percent);
+}
+
+function syncCameraMode() {
+  const ready = districtSpan > 0;
+  modeOrbitButton.disabled = !ready;
+  modeFlyButton.disabled = !ready;
+  modeOrbitButton.setAttribute("aria-pressed", String(!flying));
+  modeFlyButton.setAttribute("aria-pressed", String(flying));
+  document.body.classList.toggle("is-flying", flying);
+}
+
+function canvasLocked() {
+  return document.pointerLockElement === renderer.domElement;
+}
+
+function enterFly() {
+  if (flying || !districtSpan) return;
+  flying = true;
+  setMarkTool(false);
+  controls.enabled = false;
+  fly.engage(camera);
+  syncCameraMode();
+  showHint(FLY_HINT);
+  awaitingLock = true;
+  const lockRequest = renderer.domElement.requestPointerLock();
+  lockRequest?.catch?.(() => {
+    awaitingLock = false;
+    if (flying) showHint(LOCK_HINT);
+  });
+}
+
+function exitFly() {
+  if (!flying) return;
+  awaitingLock = false;
+  const locked = canvasLocked();
+  flying = false;
+  fly.release();
+  camera.getWorldDirection(lookDirection);
+  controls.target.copy(camera.position).addScaledVector(lookDirection, districtSpan * 0.15);
+  const offset = lookDirection.copy(camera.position).sub(controls.target);
+  const phi = Math.atan2(Math.hypot(offset.x, offset.z), offset.y);
+  controls.maxPolarAngle = Math.max(Math.PI / 2 - 0.05, Math.min(Math.PI - 0.01, phi));
+  controls.enabled = true;
+  controls.update();
+  syncCameraMode();
+  showHint(markArmed ? MARK_HINT : IDLE_HINT);
+  if (locked) document.exitPointerLock();
+}
+
+document.addEventListener("pointerlockchange", () => {
+  if (canvasLocked()) {
+    awaitingLock = false;
+    if (flying) showHint(FLY_HINT);
+    return;
+  }
+  if (awaitingLock) return;
+  if (flying) exitFly();
+});
+
+document.addEventListener("pointerlockerror", () => {
+  awaitingLock = false;
+  if (flying) showHint(LOCK_HINT);
+});
+
+function updateFlyReadout() {
+  const point = sampleMap(0, 0);
+  if (!point) {
+    coordCursorEl.textContent = "Look —";
+    if (marks.length === 0) showMarkedPoint(null);
+    else showMarkedPoint(marks[marks.length - 1]);
+    return;
+  }
+  showMarkedPoint(point);
+  coordCursorEl.textContent = `Look ${formatMapCoordinate(point.latitude)}°, ${formatMapCoordinate(point.longitude)}°`;
+}
+
+window.addEventListener("keydown", (event) => {
+  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.code === "Escape") {
+    exitFly();
+    return;
+  }
+  if (event.code !== "KeyF" || !districtSpan) return;
+  if (flying) exitFly();
+  else enterFly();
+});
+
+modeOrbitButton.addEventListener("click", () => {
+  exitFly();
+  modeOrbitButton.blur();
+});
+
+modeFlyButton.addEventListener("click", () => {
+  enterFly();
+  modeFlyButton.blur();
+});
+
+flySpeedInput.addEventListener("input", applyFlySpeed);
+
+const pinAnchor = new THREE.Vector3();
+
+function scalePins() {
+  for (const pin of markGroup.children) {
+    const distance = camera.position.distanceTo(pin.getWorldPosition(pinAnchor));
+    pin.scale.setScalar(Math.max(distance * 0.045, 12));
+  }
+}
+
+markButton.addEventListener("click", () => {
+  if (markButton.disabled) return;
+  setMarkTool(!markArmed);
+});
+
+clearButton.addEventListener("click", () => {
+  if (clearButton.disabled) return;
+  clearMarks();
+});
+
+renderer.domElement.addEventListener("pointermove", (event) => {
+  if (flying) return;
+  if (event.buttons !== 0) return;
+  const point = pickMapPoint(event);
+  if (!point) {
+    coordCursorEl.textContent = "Cursor —";
+    if (marks.length === 0) showMarkedPoint(null);
+    return;
+  }
+  coordCursorEl.textContent = `Cursor ${formatMapCoordinate(point.latitude)}°, ${formatMapCoordinate(point.longitude)}°`;
+  if (marks.length === 0) showMarkedPoint(point);
+});
+
+renderer.domElement.addEventListener("pointerleave", () => {
+  if (flying) return;
+  press = null;
+  coordCursorEl.textContent = "Cursor —";
+  if (marks.length === 0) showMarkedPoint(null);
+});
+
+renderer.domElement.addEventListener("pointerdown", (event) => {
+  if (flying || !markArmed || event.button !== 0) return;
+  press = { x: event.clientX, y: event.clientY };
+});
+
+renderer.domElement.addEventListener("pointerup", (event) => {
+  if (!markArmed || event.button !== 0 || !press) return;
+  const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y);
+  press = null;
+  if (moved > 6) return;
+  const point = pickMapPoint(event);
+  if (point) placeMark(point);
+});
 
 async function applySatellite(ground, center, size, bbox) {
   try {
@@ -147,6 +455,10 @@ async function loadMeta() {
     if (typeof meta.tree_count === "number") {
       treesEl.textContent = meta.tree_count.toLocaleString("en-US");
     }
+    if (Array.isArray(meta.bbox) && meta.bbox.length === 4 && meta.bbox.every((value) => Number.isFinite(value))) {
+      mapBbox = meta.bbox;
+      markButton.disabled = false;
+    }
     return meta;
   } catch {
     return null;
@@ -184,7 +496,25 @@ resize();
 window.addEventListener("resize", resize);
 loadMeta().then((meta) => loadModel(meta));
 
+applyFlySpeed();
+syncCameraMode();
+showHint(IDLE_HINT);
+
 renderer.setAnimationLoop(() => {
-  controls.update();
+  const delta = clock.getDelta();
+  fpsWindow += delta;
+  fpsFrames += 1;
+  if (fpsWindow >= 0.25) {
+    fpsEl.textContent = String(Math.round(fpsFrames / fpsWindow));
+    fpsWindow = 0;
+    fpsFrames = 0;
+  }
+  if (flying) {
+    fly.update(camera, delta);
+    updateFlyReadout();
+  } else {
+    controls.update();
+  }
+  scalePins();
   renderer.render(scene, camera);
 });

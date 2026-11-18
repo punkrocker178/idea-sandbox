@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.atlas_gap import add_missing_atlas_buildings, fetch_atlas_records
+from scripts.atlas_gap import add_missing_atlas_buildings, corridor_rings, fetch_atlas_records
 from osm2threejs.fetcher import OVERPASS_SERVER_TIMEOUT_S, BoundingBox, OsmDataFetcher, query_overpass
 from osm2threejs.geometry import _multipolygon_parts
 from osm2threejs.triangulation import triangulate_polygon
@@ -91,16 +91,23 @@ def city_from_overpass(payload: dict) -> o3.CityModel3D:
     )
 
 
-def fetch_overpass() -> dict:
-    """Download buildings, roads, parks, water, and trees for the district."""
+def district_overpass_query() -> str:
+    """Overpass query for the district, including pedestrian street areas."""
     bbox = BoundingBox(*DISTRICT1_BBOX)
     fetcher = OsmDataFetcher(endpoints=OVERPASS_ENDPOINTS)
     query = fetcher.build_study_query(bbox).replace(
         f"[timeout:{OVERPASS_SERVER_TIMEOUT_S}]",
         "[timeout:180]",
     )
+    highway = f'way["highway"]({bbox.overpass_bbox});'
+    pedestrian = f'relation["highway"="pedestrian"]({bbox.overpass_bbox});'
+    return query.replace(highway, f"{highway}\n          {pedestrian}", 1)
+
+
+def fetch_overpass() -> dict:
+    """Download buildings, roads, parks, water, trees, and pedestrian areas."""
     print("Querying Overpass for District 1…", flush=True)
-    return query_overpass(query, timeout=220, endpoints=OVERPASS_ENDPOINTS)
+    return query_overpass(district_overpass_query(), timeout=220, endpoints=OVERPASS_ENDPOINTS)
 
 
 def _fold_name(text: str) -> str:
@@ -294,6 +301,36 @@ def _append_view(binary: bytearray, payload: bytes, target: int, views: list) ->
     )
     binary.extend(payload)
     return len(views) - 1
+
+
+def pedestrian_area_rings(payload: dict):
+    """Filled pedestrian streets, such as Nguyễn Huệ walking street.
+
+    A carriageway is a centerline. The walking street is a polygon, so Atlas
+    footprints in the middle of it are not on any ribbon.
+    """
+    nodes, ways = _element_index(payload)
+    parts = []
+    for element in payload.get("elements", []):
+        tags = element.get("tags") or {}
+        if tags.get("highway") != "pedestrian":
+            continue
+        if element.get("type") == "relation" and tags.get("type") == "multipolygon":
+            parts.extend(_multipolygon_parts(element, ways, nodes))
+        elif element.get("type") == "way" and tags.get("area") == "yes":
+            ring = _closed_way_ring(element, nodes)
+            if ring is not None:
+                parts.append((ring, []))
+    return _clip_parts(parts)
+
+
+def street_corridor_rings(city: o3.CityModel3D):
+    """Carriageway polygons for the streets the model draws."""
+    centerlines = []
+    for road in _drawn_streets(city):
+        width = min(max(float(road.width_m), 0.5), MAX_STREET_WIDTH_M)
+        centerlines.append((road.centerline, width))
+    return corridor_rings(centerlines)
 
 
 def _drawn_streets(city: o3.CityModel3D) -> list:
@@ -596,7 +633,8 @@ def write_outputs(city: o3.CityModel3D, rings) -> None:
             "note": (
                 "Buildings are LOD1 extrusions. OpenStreetMap footprints are "
                 "kept. Global Building Atlas footprints are added where they "
-                "are not already an OpenStreetMap building or water surface. "
+                "are not already an OpenStreetMap building, water surface, "
+                "street, or pedestrian area. "
                 "Streets are ribbons from OSM highways. Blue surfaces are OSM "
                 "water polygons clipped to the District 1 boundary, including "
                 "the Saigon River, canals, lakes, and ponds. Green trees are "
@@ -617,7 +655,9 @@ def main() -> int:
     print("Querying the Global Building Atlas for District 1…", flush=True)
     records = fetch_atlas_records(DISTRICT1_BBOX)
     print(f"Atlas footprints in the district box: {len(records)}", flush=True)
-    added = add_missing_atlas_buildings(city, records)
+    blockers = pedestrian_area_rings(payload) + street_corridor_rings(city)
+    print(f"Street and pedestrian blockers: {len(blockers)}", flush=True)
+    added = add_missing_atlas_buildings(city, records, blockers)
     print(f"Atlas buildings added: {added}", flush=True)
     rings = osm_water_rings(payload)
     print(f"Water surfaces: {len(rings)}. Trees: {city.tree_count}", flush=True)

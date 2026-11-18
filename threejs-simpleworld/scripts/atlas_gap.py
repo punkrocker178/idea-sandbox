@@ -1,9 +1,10 @@
 """Extrude Global Building Atlas footprints that OpenStreetMap does not already have.
 
 The Atlas (Zhu et al.) traces a footprint and a height from satellite imagery.
-A footprint is kept when most of it is not already an OpenStreetMap building
-or water surface. Matching outlines are dropped so the same house is not
-drawn twice.
+A footprint is kept when most of it is not already an OpenStreetMap building,
+water surface, street, or pedestrian area. Matching outlines are dropped so
+the same house is not drawn twice, and satellite footprints on a boulevard
+are left out.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import duckdb
 import osm2threejs as o3
 from shapely import STRtree, box, from_wkb, make_valid, union_all
 from shapely.affinity import scale
-from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
+from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
 # 5° tile e105_n15_e110_n10 covers longitude 105–110 and latitude 10–15.
@@ -71,10 +72,43 @@ def fetch_atlas_records(bbox: tuple[float, float, float, float]):
     return records
 
 
-def add_missing_atlas_buildings(city: o3.CityModel3D, records) -> int:
-    """Append Atlas buildings that do not already exist in ``city``. Return how many."""
+def corridor_rings(centerlines) -> list[tuple[list[tuple[float, float]], list]]:
+    """Buffer each ``(lon/lat centerline, width_m)`` into a carriageway ring.
+
+    The ring is occupied ground. An Atlas footprint that lies on it is dropped
+    or cut, the same way a footprint on a mapped building is.
+    """
+    rings = []
+    for coords, width in centerlines:
+        points = [(float(lon), float(lat)) for lon, lat in coords]
+        if len(points) < 2 or not width or float(width) <= 0:
+            continue
+        line = LineString(points)
+        if line.is_empty or line.length == 0:
+            continue
+        latitude = sum(lat for _lon, lat in points) / len(points)
+        metres_lon, metres_lat = _metres_per_degree(latitude)
+        covered = _to_metres(line, metres_lon, metres_lat).buffer(
+            float(width) / 2.0,
+            cap_style="round",
+            join_style="bevel",
+        )
+        for piece in _polygons(make_valid(covered)):
+            outer, holes = _rings_lonlat(piece, metres_lon, metres_lat)
+            if outer is not None:
+                rings.append((outer, holes))
+    return rings
+
+
+def add_missing_atlas_buildings(city: o3.CityModel3D, records, occupied_extra=()) -> int:
+    """Append Atlas buildings that do not already exist in ``city``. Return how many.
+
+    ``occupied_extra`` is more ``(outer, holes)`` rings, such as street
+    corridors and pedestrian areas.
+    """
     occupied = [(building.footprint, building.holes) for building in city.buildings]
     occupied.extend((water.polygon, []) for water in city.waterbodies)
+    occupied.extend(occupied_extra)
     added = missing_buildings(records, occupied, city.bbox.to_tuple())
     city.buildings.extend(added)
     return len(added)
