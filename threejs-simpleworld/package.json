@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "model-windows": "py scripts/build_district1.py",
     "model": "python3 scripts/build_district1.py",
     "test": "node --test src/imagery.test.js src/fly.test.js src/basemap.test.js",
     "map": "node scripts/build_basemap.mjs"

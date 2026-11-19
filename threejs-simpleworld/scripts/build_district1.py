@@ -1,8 +1,10 @@
 """Build a LOD1 GLB of Ho Chi Minh City District 1.
 
 The GLB is what the Three.js viewer loads. osm2threejs extrudes each OpenStreetMap
-footprint into a closed solid. Global Building Atlas footprints fill houses OSM
-does not map. Untagged buildings default to 3 floors at 3.2 m.
+footprint into a closed solid. Buildings mapped with building:part ways extrude
+each section at its own height, and the outline keeps only what parts do not
+cover. Global Building Atlas footprints fill houses OSM does not map. Untagged
+buildings default to 3 floors at 3.2 m.
 """
 
 from __future__ import annotations
@@ -12,19 +14,31 @@ import math
 import struct
 import sys
 import unicodedata
+from dataclasses import replace
 from pathlib import Path
 
 import osm2threejs as o3
 from osm2threejs.exporters import _f32, _local_projector, _srgb_hex_to_linear_rgba
+from shapely import STRtree, make_valid, union_all
 
 # `npm run model` executes this file, so the project root is not on sys.path yet.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.atlas_gap import add_missing_atlas_buildings, corridor_rings, fetch_atlas_records
+from scripts.atlas_gap import (
+    MIN_FOOTPRINT_AREA_M2,
+    _metres_per_degree,
+    _polygon_from_rings,
+    _polygons,
+    _rings_lonlat,
+    _to_metres,
+    add_missing_atlas_buildings,
+    corridor_rings,
+    fetch_atlas_records,
+)
 from osm2threejs.fetcher import OVERPASS_SERVER_TIMEOUT_S, BoundingBox, OsmDataFetcher, query_overpass
-from osm2threejs.geometry import _multipolygon_parts
+from osm2threejs.geometry import BuildingMesh, _multipolygon_parts, _parse_height, _parse_roof_shape
 from osm2threejs.triangulation import triangulate_polygon
 
 # Nominatim relation 2587287, "Quận 1, Thành phố Hồ Chí Minh", queried 2026-11-12.
@@ -91,6 +105,137 @@ def city_from_overpass(payload: dict) -> o3.CityModel3D:
     )
 
 
+def _part_roof_height(tags: dict, roof_shape: str) -> float:
+    """Roof height in metres from roof:height or roof:levels, default 2.5 m."""
+    if roof_shape == "flat":
+        return 0.0
+    if "roof:height" in tags:
+        try:
+            return max(0.0, float(tags["roof:height"].lower().replace("m", "").strip()))
+        except (ValueError, TypeError):
+            pass
+    if "roof:levels" in tags:
+        try:
+            return max(0.0, float(tags["roof:levels"])) * 3.2
+        except (ValueError, TypeError):
+            pass
+    return 2.5
+
+
+def building_part_meshes(payload: dict) -> list:
+    """One BuildingMesh per OSM building:part way in the payload."""
+    nodes, ways = _element_index(payload)
+    meshes = []
+    for element in payload.get("elements", []):
+        if element.get("type") != "way":
+            continue
+        tags = element.get("tags", {})
+        if "building:part" not in tags:
+            continue
+        coords = [nodes[nid] for nid in ways.get(element["id"], []) if nid in nodes]
+        if len(coords) < 3:
+            continue
+        height_m, min_height_m, levels = _parse_height(tags, default_levels=3)
+        if min_height_m > 0 and ("height" in tags or "building:levels" in tags):
+            # OSM `height` is the absolute top, but osm2threejs stacks height_m
+            # on top of min_height_m. Store the part's own span instead.
+            height_m = max(2.5, height_m - min_height_m)
+        roof_shape = _parse_roof_shape(tags)
+        meshes.append(
+            BuildingMesh(
+                osm_id=element["id"],
+                footprint=coords,
+                height_m=height_m,
+                min_height_m=min_height_m,
+                levels=levels,
+                roof_shape=roof_shape,
+                roof_height_m=_part_roof_height(tags, roof_shape),
+                wall_color=tags.get("building:colour"),
+                roof_color=tags.get("roof:colour"),
+                building_type=tags.get("building:part", "yes"),
+                tags=tags,
+            )
+        )
+    return meshes
+
+
+def apply_building_parts(city: o3.CityModel3D, payload: dict) -> int:
+    """Extrude building:part ways and cut covered outlines back to their remainder.
+
+    A part belongs to the outline that contains at least half of it. An outline
+    fully covered by its parts is dropped; a partially covered outline keeps
+    the uncovered rings at its own tagged height. Returns the part count.
+    """
+    parts = building_part_meshes(payload)
+    if not parts:
+        return 0
+    min_lon, min_lat, max_lon, max_lat = city.bbox.to_tuple()
+    metres_lon, metres_lat = _metres_per_degree((min_lat + max_lat) / 2)
+
+    outlines: dict[int, object] = {}
+    for position, building in enumerate(city.buildings):
+        polygon = _polygon_from_rings(building.footprint, building.holes)
+        if polygon is not None:
+            outlines[position] = _to_metres(make_valid(polygon), metres_lon, metres_lat)
+    positions = list(outlines)
+    index = STRtree([outlines[p] for p in positions]) if positions else None
+
+    covered: dict[int, list] = {}
+    if index is not None:
+        for mesh in parts:
+            part = _polygon_from_rings(mesh.footprint, [])
+            if part is None:
+                continue
+            part_m = _to_metres(make_valid(part), metres_lon, metres_lat)
+            if part_m.area <= 0:
+                continue
+            for hit in index.query(part_m, predicate="intersects"):
+                position = positions[int(hit)]
+                if outlines[position].intersection(part_m).area >= 0.5 * part_m.area:
+                    if "height" not in mesh.tags and "building:levels" not in mesh.tags:
+                        # Simple 3D Buildings: a part without height or levels
+                        # inherits the outline's top. Vietcombank Tower's six
+                        # sections are tagged this way.
+                        outline = city.buildings[position]
+                        top = outline.min_height_m + outline.height_m
+                        mesh.levels = outline.levels
+                        mesh.height_m = max(2.5, top - mesh.min_height_m)
+                    covered.setdefault(position, []).append(part_m)
+                    break
+
+    drop: set[int] = set()
+    extra: list = []
+    # Ways tagged both building=* and building:part=* are already extruded as
+    # parts above; drop the outline copy osm2threejs made for them.
+    for position, building in enumerate(city.buildings):
+        if "building:part" in building.tags:
+            drop.add(position)
+    for position, part_polys in covered.items():
+        building = city.buildings[position]
+        remainder = make_valid(outlines[position].difference(union_all(part_polys)))
+        pieces = [p for p in _polygons(remainder) if p.area >= MIN_FOOTPRINT_AREA_M2]
+        if not pieces:
+            drop.add(position)
+            continue
+        first = True
+        for piece in pieces:
+            outer, holes = _rings_lonlat(piece, metres_lon, metres_lat)
+            if outer is None:
+                continue
+            if first:
+                building.footprint = outer
+                building.holes = holes
+                first = False
+            else:
+                extra.append(replace(building, footprint=outer, holes=holes))
+
+    if drop:
+        city.buildings = [b for i, b in enumerate(city.buildings) if i not in drop]
+    city.buildings.extend(extra)
+    city.buildings.extend(parts)
+    return len(parts)
+
+
 def district_overpass_query() -> str:
     """Overpass query for the district, including pedestrian street areas."""
     bbox = BoundingBox(*DISTRICT1_BBOX)
@@ -101,13 +246,20 @@ def district_overpass_query() -> str:
     )
     highway = f'way["highway"]({bbox.overpass_bbox});'
     pedestrian = f'relation["highway"="pedestrian"]({bbox.overpass_bbox});'
-    return query.replace(highway, f"{highway}\n          {pedestrian}", 1)
+    parts = f'way["building:part"]({bbox.overpass_bbox});'
+    return query.replace(highway, f"{highway}\n          {pedestrian}\n          {parts}", 1)
 
 
 def fetch_overpass() -> dict:
     """Download buildings, roads, parks, water, trees, and pedestrian areas."""
     print("Querying Overpass for District 1…", flush=True)
-    return query_overpass(district_overpass_query(), timeout=220, endpoints=OVERPASS_ENDPOINTS)
+    # Skip the week-long on-disk cache so OSM edits show up on the next build.
+    return query_overpass(
+        district_overpass_query(),
+        timeout=220,
+        endpoints=OVERPASS_ENDPOINTS,
+        use_cache=False,
+    )
 
 
 def _fold_name(text: str) -> str:
@@ -611,12 +763,14 @@ def write_outputs(city: o3.CityModel3D, rings) -> None:
     export_district_glb(city, rings, MODEL_PATH)
     summary = city.summary()
     atlas_count = sum(str(building.osm_id).startswith("gba:") for building in city.buildings)
+    part_count = sum("building:part" in building.tags for building in city.buildings)
     summary.update(
         {
             "source": "OpenStreetMap + Global Building Atlas",
             "license": "ODbL; CC BY-NC 4.0",
             "lod": "LOD1",
-            "osm_building_count": city.building_count - atlas_count,
+            "osm_building_count": city.building_count - atlas_count - part_count,
+            "building_part_count": part_count,
             "atlas_building_count": atlas_count,
             "street_count": len(_drawn_streets(city)),
             "street_color": STREET_COLOR,
@@ -632,7 +786,9 @@ def write_outputs(city: o3.CityModel3D, rings) -> None:
             "axes": "+X east, +Y up, -Z north, metres from the district centre",
             "note": (
                 "Buildings are LOD1 extrusions. OpenStreetMap footprints are "
-                "kept. Global Building Atlas footprints are added where they "
+                "kept. OSM building:part ways extrude each section at its own "
+                "height, and the outline keeps only the uncovered remainder. "
+                "Global Building Atlas footprints are added where they "
                 "are not already an OpenStreetMap building, water surface, "
                 "street, or pedestrian area. "
                 "Streets are dark gray ribbons from OSM highways. Blue surfaces are OSM "
@@ -652,6 +808,8 @@ def main() -> int:
     print(f"Overpass elements: {len(payload.get('elements', []))}", flush=True)
     city = city_from_overpass(payload)
     print(f"OpenStreetMap buildings: {city.building_count}", flush=True)
+    part_count = apply_building_parts(city, payload)
+    print(f"Building parts: {part_count}", flush=True)
     print("Querying the Global Building Atlas for District 1…", flush=True)
     records = fetch_atlas_records(DISTRICT1_BBOX)
     print(f"Atlas footprints in the district box: {len(records)}", flush=True)
