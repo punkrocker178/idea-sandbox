@@ -4,7 +4,7 @@ LOD1 building massing for **Ho Chi Minh City, District 1**, viewed in Three.js.
 
 OpenStreetMap footprints are extruded with [osm2threejs](https://pypi.org/project/osm2threejs/). Houses that OSM does not map are filled from the [Global Building Atlas](https://source.coop/tge-labs/globalbuildingatlas-lod1) (Zhu et al.), which traces footprints and heights from satellite imagery. An Atlas footprint is kept when it is not already an OSM building, water surface, street, or pedestrian area. Where neither source has a height, the model uses 3 floors at 3.2 m. Atlas outlines of a house OSM already mapped are dropped, so the same building is not drawn twice. Streets are flat ribbons from OSM `highway` ways (motorway through service and pedestrian), using each way's width. Footways, paths, steps, and tunnels are left out. Bridges sit above the river. OpenStreetMap water polygons — the Saigon River (Sông Sài Gòn, relation 3850169), canals such as Kênh Bến Nghé, lakes, and ponds — are blue surfaces clipped to the district boundary. Each `natural=tree` node is a trunk and crown. Untagged trees are 6 m tall. The GLB is centred on the district bounding box: +X east, +Y up, −Z north, in metres.
 
-OpenStreetMap does not publish satellite photos. The ground plane is textured at runtime with [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9) (zoom 16), aligned to that same local frame. Imagery © Esri, Maxar, Earthstar Geographics.
+OpenStreetMap does not publish satellite photos. The ground plane is textured at runtime with [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9) (zoom 16), aligned to that same local frame. Imagery © Esri, Maxar, Earthstar Geographics. The Satellite and Map buttons swap that photo for a flat map of the same ground: residential land, grass, parks, a sidewalk along each road, and the road itself in dark gray. The map is `public/models/district1-map.json`, rebuilt with `npm run map`. Street ribbons in the model use the same dark gray.
 
 The district box is Nominatim relation [2587287](https://www.openstreetmap.org/relation/2587287) (Quận 1), captured 2026-11-12:
 
@@ -38,5 +38,5 @@ npm run model
 ```bash
 pip install pytest
 pytest
-node --test src/imagery.test.js
+node --test src/imagery.test.js src/fly.test.js src/basemap.test.js
 ```
